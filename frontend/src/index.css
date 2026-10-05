@@ -1,0 +1,85 @@
+@import "tailwindcss";
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/inter/700.css";
+@import "@xyflow/react/dist/style.css";
+
+/* The Flowstate reference palette (docs/devflow-ui-plan.md, Visual direction). Dark only for now. */
+:root {
+  color-scheme: dark;
+  --sidebar: oklch(12% 0.012 260);
+  --background: oklch(14.5% 0.012 260);
+  --surface: oklch(16.5% 0.012 260);
+  --card: oklch(18% 0.014 260);
+  --surface-raised: oklch(20.5% 0.015 260);
+  --popover: oklch(21% 0.015 260);
+  --muted: oklch(24.5% 0.012 260);
+  --accent: oklch(27.5% 0.02 260);
+  --track: oklch(29% 0.012 260);
+  --border: oklch(31% 0.012 260);
+  --input: oklch(32% 0.012 260);
+  --muted-foreground: oklch(66% 0.015 260);
+  --foreground: oklch(97% 0.006 260);
+  --primary: oklch(66% 0.19 256);
+  --primary-soft: oklch(66% 0.19 256 / 14%);
+  --success: oklch(75% 0.16 155);
+  --success-soft: oklch(75% 0.16 155 / 12%);
+  --warning: oklch(81% 0.14 82);
+  --warning-soft: oklch(81% 0.14 82 / 12%);
+  --destructive: oklch(67% 0.19 25);
+  --destructive-soft: oklch(67% 0.19 25 / 12%);
+}
+
+@theme inline {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --color-sidebar: var(--sidebar);
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-card: var(--card);
+  --color-raised: var(--surface-raised);
+  --color-popover: var(--popover);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-track: var(--track);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-primary-soft: var(--primary-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-destructive: var(--destructive);
+  --color-destructive-soft: var(--destructive-soft);
+  --radius-xl: 12px;
+  --animate-slow-pulse: slow-pulse 2s ease-in-out infinite;
+  @keyframes slow-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.45; }
+  }
+}
+
+@layer base {
+  * { border-color: var(--border); }
+  html, body, #root { height: 100%; }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+  }
+  button { cursor: pointer; }
+  button:disabled { cursor: not-allowed; }
+  ::selection { background: var(--primary-soft); }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--track); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+}
+
+.react-flow { --xy-background-color: transparent; }
+.react-flow__attribution { display: none; }
+.react-flow__controls button { background: var(--surface-raised); border-color: var(--border); fill: var(--foreground); }

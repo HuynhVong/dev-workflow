@@ -225,3 +225,26 @@ def test_doctor_checks_and_usage_aggregates(env):
     wait_status(c, run_id, "WAITING_HUMAN")
     u = c.get("/api/usage").json()
     assert u["totals"]["input_tokens"] == 1200 and u["by_workflow"][0]["workflow"] == "test_only_graph"
+
+
+def test_setup_from_no_workspace_file(tmp_path):
+    """A fresh machine: no workspace.yaml, the setup wizard saves one, the app loads it without a restart."""
+    from dev_workflows.jira_implement.runner import Session, load
+    path = tmp_path / "workspace.yaml"
+    app = App(lambda: Session(load(str(path)), ask=None, out=__import__("io").StringIO()), str(path), token="tok")
+    c = TestClient(create_app(app))
+    c.get("/?token=tok", follow_redirects=False)
+    m = c.get("/api/meta").json()
+    assert not m["loaded"] and not m["workspace_exists"]
+    assert c.get("/api/runs").status_code == 409
+    w = c.get("/api/workspace").json()
+    assert w["exists"] is False and w["data"] == {}
+    repo = tmp_path / "api"
+    repo.mkdir()
+    data = {"repos": {"api": {"path": str(repo), "base_branch": "develop"}}, "state_dir": str(tmp_path / ".devflow"),
+            "worktree_root": str(tmp_path / "wt"), "max_parallel_runs": 2}
+    assert c.put("/api/workspace", json={"data": data}).status_code == 200
+    m = c.get("/api/meta").json()
+    assert m["loaded"] and m["repos"] == ["api"] and m["slots"]["max"] == 2
+    assert c.get("/api/runs").json()["runs"] == []
+    app.manager.shutdown()
