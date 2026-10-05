@@ -1,0 +1,9 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "ticket_to_plan": "./src/dev_workflows/workflows/ticket_to_plan.py:graph",
+    "pr_review": "./src/dev_workflows/workflows/pr_review.py:graph",
+    "standup": "./src/dev_workflows/workflows/standup.py:graph"
+  },
+  "env": ".env"
+}
