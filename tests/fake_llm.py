@@ -8,7 +8,7 @@ class FakeLLM:
         self.queues = defaultdict(deque, {k: deque(v if isinstance(v, list) else [v]) for k, v in responses.items()})
         self.calls: list[tuple[type, str]] = []
 
-    def structured(self, system, prompt, schema):
+    def structured(self, system, prompt, schema, images=()):
         self.calls.append((schema, prompt))
         q = self.queues[schema]
         if not q:

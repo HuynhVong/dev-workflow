@@ -2,6 +2,8 @@
 
 collect_git -> digest -> render
 """
+import os
+import shlex
 import subprocess
 
 from langgraph.graph import END, START, StateGraph
@@ -28,7 +30,9 @@ class State(TypedDict):
 
 
 def read_git_log(repo: str, since: str, author: str | None) -> str:
-    cmd = ["git", "-C", repo, "log", f"--since={since}", "--no-merges", "--pretty=format:%h %ad %s", "--date=short", "--all"]
+    # Project rule: every git call goes through rtk (override with DEVFLOW_VCS_PREFIX="" to disable).
+    prefix = shlex.split(os.getenv("DEVFLOW_VCS_PREFIX", "rtk"))
+    cmd = [*prefix, "git", "-C", repo, "log", f"--since={since}", "--no-merges", "--pretty=format:%h %ad %s", "--date=short", "--all"]
     if author:
         cmd.append(f"--author={author}")
     try:

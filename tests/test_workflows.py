@@ -56,7 +56,8 @@ def test_pr_review_fans_out_and_sorts_findings():
     assert out["output"].index("[blocker]") < out["output"].index("[nit]")
 
 
-def test_standup_reads_git(tmp_path):
+def test_standup_reads_git(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEVFLOW_VCS_PREFIX", "")
     repo = tmp_path / "r"
     repo.mkdir()
     run = lambda *a: subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True)

@@ -3,7 +3,10 @@
 Nodes only depend on the `StructuredLLM` protocol, so tests can swap in a fake
 and you can swap models per workflow without touching graph code.
 """
-from typing import Protocol, TypeVar
+import base64
+import mimetypes
+from pathlib import Path
+from typing import Protocol, Sequence, TypeVar
 
 import anthropic
 from pydantic import BaseModel
@@ -13,8 +16,22 @@ from .config import Settings, settings as default_settings
 T = TypeVar("T", bound=BaseModel)
 
 
+IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+
+
 class StructuredLLM(Protocol):
-    def structured(self, system: str, prompt: str, schema: type[T]) -> T: ...
+    def structured(self, system: str, prompt: str, schema: type[T], images: Sequence[str] = ()) -> T: ...
+
+
+def _image_blocks(paths: Sequence[str]) -> list[dict]:
+    blocks = []
+    for p in paths:
+        media_type = mimetypes.guess_type(p)[0]
+        if media_type not in IMAGE_TYPES:
+            continue
+        data = base64.standard_b64encode(Path(p).read_bytes()).decode()
+        blocks.append({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}})
+    return blocks
 
 
 class LLMRefusal(RuntimeError):
@@ -33,12 +50,13 @@ class ClaudeLLM:
             self._client = anthropic.Anthropic()
         return self._client
 
-    def structured(self, system: str, prompt: str, schema: type[T]) -> T:
+    def structured(self, system: str, prompt: str, schema: type[T], images: Sequence[str] = ()) -> T:
+        content = [*_image_blocks(images), {"type": "text", "text": prompt}]
         response = self.client.beta.messages.parse(
             model=self.cfg.model,
             max_tokens=self.cfg.max_tokens,
             system=system,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": content}],
             output_format=schema,
             output_config={"effort": self.cfg.effort},
             # Server-side fallback: if a safety classifier declines, the API retries on a fallback model.

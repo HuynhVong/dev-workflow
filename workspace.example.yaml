@@ -1,0 +1,60 @@
+# Copy to workspace.yaml (or point $DEVFLOW_WORKSPACE at it). Used by `devflow implement` and `devflow address-review`.
+# Relative paths are resolved against this file's folder.
+
+repos:
+  shared-lib:
+    path: ~/code/shared-lib
+    gitlab_project: acme/shared-lib
+    base_branch: develop            # branches are cut from a freshly pulled develop; MRs target it
+    has_ui: false
+    commands:                       # run in this order after every change; the first failure stops the list
+      lint: npm run lint
+      typecheck: npm run typecheck
+      test: npm test
+      build: npm run build
+  api-service:
+    path: ~/code/api-service
+    gitlab_project: acme/api-service
+    commands:
+      lint: ./gradlew spotlessCheck
+      test: ./gradlew test
+      run: ./gradlew bootRun        # used for the integration/E2E check and shown at the manual test
+  web-portal:
+    path: ~/code/web-portal
+    gitlab_project: acme/web-portal
+    has_ui: true                    # needs the Playwright MCP below
+    commands:
+      lint: pnpm lint
+      typecheck: pnpm tsc --noEmit
+      test: pnpm test
+      run: pnpm dev
+
+# MCP servers. Jira needs read + write; Confluence is only ever READ (write tools are never exposed).
+mcp_servers:
+  atlassian:
+    command: uvx
+    args: [mcp-atlassian]
+    env:
+      JIRA_URL: https://acme.atlassian.net
+      JIRA_USERNAME: you@acme.io
+      JIRA_API_TOKEN: ${JIRA_API_TOKEN}
+      CONFLUENCE_URL: https://acme.atlassian.net/wiki
+      CONFLUENCE_USERNAME: you@acme.io
+      CONFLUENCE_API_TOKEN: ${CONFLUENCE_API_TOKEN}
+  playwright:
+    command: npx
+    args: ["@playwright/mcp@latest"]
+
+jira_server: atlassian
+confluence_server: atlassian
+jira_user: you@acme.io              # warns if the ticket is assigned to someone else
+
+# Tool names default to sooperset/mcp-atlassian. Override any that differ in your server:
+# jira_tools: {get_issue: jira_get_issue, add_comment: jira_add_comment, edit_comment: jira_edit_comment, ...}
+# confluence_tools: {get_page: confluence_get_page, search: confluence_search, ...}
+
+status_order: [To Do, In Progress, Code Review]   # Jira status only ever moves forward
+review_status: Code Review
+vcs_prefix: rtk                     # every git/glab call is `rtk git ...` / `rtk glab ...`
+state_dir: .devflow                 # SQLite checkpoints, audit log and side-effect ledger
+max_fix_attempts: 3                 # automated fix attempts per repo for a whole run, never reset
