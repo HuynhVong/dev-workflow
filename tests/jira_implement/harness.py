@@ -190,7 +190,8 @@ def make_env(tmp_path: Path, repos=("api", "web"), checks=None, extra_repos=()):
         sh("git", "-C", str(work), "push", "-q", "-u", "origin", "develop")
         ws_repos[r] = {"path": str(work), "gitlab_project": f"acme/{r}", "has_ui": False,
                        "commands": {"lint": (checks or {}).get(r, "test -f feature.txt")}}
-    (tmp_path / "workspace.yaml").write_text(json.dumps({"repos": ws_repos, "state_dir": str(tmp_path / ".devflow")}))
+    (tmp_path / "workspace.yaml").write_text(json.dumps({"repos": ws_repos, "state_dir": str(tmp_path / ".devflow"),
+                                                         "worktree_root": str(tmp_path / "wt")}))
     env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_GLAB_DB": str(tmp_path / "glab.json")}
     return load_workspace(tmp_path / "workspace.yaml"), env
 
@@ -206,8 +207,8 @@ def make_deps(tmp_path, ws, env, llm, coder, mcp=None, routing=None):
     def runner(cmd, cwd):
         return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env)
 
-    def cmd_runner(cmd, cwd):
-        return subprocess.run(cmd, shell=True, cwd=cwd, capture_output=True, text=True, env=env)
+    def cmd_runner(cmd, cwd, extra=None):
+        return subprocess.run(cmd, shell=True, cwd=cwd, capture_output=True, text=True, env={**env, **(extra or {})})
 
     deps = Deps(workspace=ws, store=store, llm=llm, jira=JiraGateway(mcp, ws.jira_tools, ws.status_order),
                 confluence=ConfluenceReader(mcp, ws.confluence_tools), coder_factory=lambda scope: coder,
@@ -224,6 +225,7 @@ def seed_review(tmp_path, ws, key="AQS-1", threads=None):
         sh("git", "-C", cfg.path, "add", ".")
         sh("git", "-C", cfg.path, "commit", "-qm", f"{key}: first")
         sh("git", "-C", cfg.path, "push", "-q", "-u", "origin", key)
+        sh("git", "-C", cfg.path, "checkout", "-q", "develop")  # the ticket branch lives in its worktree, not the clone
         db.setdefault(r, []).append({"iid": 1, "source": key, "web_url": f"https://gitlab/{r}/-/merge_requests/1", "draft": True,
                                      "title": f"Draft: {key}", "description": ""})
     for repo, tid, body in threads or []:
@@ -231,6 +233,11 @@ def seed_review(tmp_path, ws, key="AQS-1", threads=None):
             {"id": tid, "notes": [{"id": len(db["discussions"][repo]["1"]) + 1, "body": body, "author": {"username": "reviewer"},
                                    "resolvable": True, "resolved": False, "position": {"new_path": "feature.txt", "new_line": 1}}]})
     (tmp_path / "glab.json").write_text(json.dumps(db))
+
+
+def wt(ws, repo, key="AQS-1"):
+    """The run's worktree for a repo (where every edit, branch and commit happens)."""
+    return ws.worktree(key, repo)
 
 
 def glab_db(tmp_path):

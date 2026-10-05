@@ -22,6 +22,10 @@ from .mcp_client import StdioOrHttpMcp
 from .workspace import Workspace, load_workspace
 
 
+class RunConflict(RuntimeError):
+    pass
+
+
 def db_path(ws: Workspace) -> str:
     Path(ws.state_dir).mkdir(parents=True, exist_ok=True)
     return str(Path(ws.state_dir, "runs.sqlite"))
@@ -42,7 +46,9 @@ class Session:
         self.ws = ws
         path = db_path(ws)
         self.store = Store(path)
-        self.saver = SqliteSaver(sqlite3.connect(path, check_same_thread=False))
+        conn = sqlite3.connect(path, check_same_thread=False, timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL")
+        self.saver = SqliteSaver(conn)
         deps = deps_factory(ws, self.store)
         self.graphs = {WORKFLOW: build_graph(deps, checkpointer=self.saver),
                        REVIEW_WORKFLOW: build_review_graph(deps, checkpointer=self.saver)}
@@ -59,6 +65,11 @@ class Session:
 
     # ---------------------------------------------------------------- commands
     def start(self, ticket: str, repos: list[str] | None, workflow: str = WORKFLOW) -> str:
+        busy = self.store.active_runs(ticket)
+        if busy:  # one active run per ticket: they would share the ticket's worktrees
+            b = busy[0]
+            raise RunConflict(f"{ticket} already has an unfinished run {b['run_id']} ({b['status']}). Finish, resume or abort "
+                              f"it first (`devflow resume {b['run_id']}` / `devflow abort {b['run_id']}`).")
         run_id = f"{ticket}-{'review-' if workflow == REVIEW_WORKFLOW else ''}{time.strftime('%Y%m%d-%H%M%S')}"
         self.store.create_run(run_id, workflow, ticket)
         self.say(f"Run {run_id} created.")

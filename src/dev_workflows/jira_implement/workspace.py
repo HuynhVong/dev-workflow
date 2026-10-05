@@ -14,6 +14,9 @@ class RepoConfig:
     base_branch: str = "develop"
     has_ui: bool = False
     commands: dict[str, str] = field(default_factory=dict)  # lint, typecheck, test, build, run
+    setup_commands: tuple[str, ...] = ()  # run once in a fresh worktree, e.g. `npm ci`
+    copy_files: tuple[str, ...] = ()      # copied from the main clone into a fresh worktree, e.g. `.env.local`
+    parallel_checks: bool = True          # false: checks run one run at a time (fixed ports, shared local DB)
 
     @property
     def check_commands(self) -> list[tuple[str, str]]:
@@ -52,10 +55,17 @@ class Workspace:
     vcs_prefix: str = "rtk"
     state_dir: str = ".devflow"
     max_fix_attempts: int = 3
+    worktree_root: str = "~/devflow-worktrees"  # each run works in <worktree_root>/<TICKET>/<repo>
+    max_parallel_runs: int = 3                  # the UI's run manager queues the rest
+    prices: dict = field(default_factory=dict)  # USD per million tokens per model, for cost estimates
+    ui: dict = field(default_factory=dict)      # graph_sources, port, notifications
     ai: dict = field(default_factory=dict)  # per-step models and skills, see dev_workflows.routing
 
     def repo(self, name: str) -> RepoConfig:
         return self.repos[name]
+
+    def worktree(self, ticket: str, repo: str) -> str:
+        return str(Path(self.worktree_root, ticket, repo))
 
 
 def load_workspace(path: str | Path) -> Workspace:
@@ -71,10 +81,15 @@ def load_workspace(path: str | Path) -> Workspace:
             name=name, path=str(repo_path), gitlab_project=r.get("gitlab_project", ""),
             base_branch=r.get("base_branch", "develop"), has_ui=bool(r.get("has_ui", False)),
             commands=dict(r.get("commands") or {}),
+            setup_commands=tuple(r.get("setup_commands") or ()), copy_files=tuple(r.get("copy_files") or ()),
+            parallel_checks=bool(r.get("parallel_checks", True)),
         )
     state_dir = Path(raw.get("state_dir", ".devflow")).expanduser()
     if not state_dir.is_absolute():
         state_dir = base / state_dir
+    worktree_root = Path(raw.get("worktree_root", "~/devflow-worktrees")).expanduser()
+    if not worktree_root.is_absolute():
+        worktree_root = base / worktree_root
     return Workspace(
         repos=repos,
         mcp_servers=_expand(dict(raw.get("mcp_servers") or {})),
@@ -88,6 +103,10 @@ def load_workspace(path: str | Path) -> Workspace:
         vcs_prefix=raw.get("vcs_prefix", "rtk"),
         state_dir=str(state_dir),
         max_fix_attempts=int(raw.get("max_fix_attempts", 3)),
+        worktree_root=str(worktree_root),
+        max_parallel_runs=int(raw.get("max_parallel_runs", 3)),
+        prices=dict(raw.get("prices") or {}),
+        ui=dict(raw.get("ui") or {}),
         ai=dict(raw.get("ai") or {}),
     )
 

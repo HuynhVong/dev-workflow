@@ -5,7 +5,7 @@ from langgraph.types import Command
 
 from dev_workflows.jira_implement.graph import build_graph
 
-from .harness import FakeCoder, FakeLLM, glab_db, make_deps, make_env, sh
+from .harness import FakeCoder, FakeLLM, glab_db, make_deps, make_env, sh, wt
 
 
 def start(tmp_path, ws, deps, run_id="AQS-1-run", repos=None):
@@ -41,7 +41,7 @@ def test_happy_path_two_repos_in_dependency_order(tmp_path):
     web_prompt = [c[2] for c in coder.calls if c[0] == "implement" and c[1] == "web"][0]
     assert "upstream_repo name='api'" in web_prompt
     for r in ("api", "web"):  # branch = bare ticket key from develop, nothing committed yet
-        path = ws.repos[r].path
+        path = wt(ws, r)
         assert sh("git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD") == "AQS-1"
         assert sh("git", "-C", path, "status", "--porcelain")
         assert sh("git", "-C", path, "config", "--get", "branch.AQS-1.devflow-run") == "AQS-1-run"
@@ -56,8 +56,8 @@ def test_happy_path_two_repos_in_dependency_order(tmp_path):
     assert mcp.status == "Code Review" and len(mcp.comments) == 1
     assert store.run("AQS-1-run")["status"] == "COMPLETED"
     origin_head = sh("git", "--git-dir", str(tmp_path / "origin/api.git"), "rev-parse", "AQS-1")
-    assert origin_head == sh("git", "-C", ws.repos["api"].path, "rev-parse", "HEAD")
-    msg = sh("git", "-C", ws.repos["api"].path, "log", "-1", "--format=%B")
+    assert origin_head == sh("git", "-C", wt(ws, "api"), "rev-parse", "HEAD")
+    msg = sh("git", "-C", wt(ws, "api"), "log", "-1", "--format=%B")
     assert msg.startswith("AQS-1: Export orders as CSV") and "Devflow-Run: AQS-1-run" in msg
 
 

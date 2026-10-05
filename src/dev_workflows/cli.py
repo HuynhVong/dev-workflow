@@ -11,6 +11,7 @@ Jira ticket implement (needs workspace.yaml, see workspace.example.yaml):
   devflow answer <run_id> --choice approve [--note "..."] [--repos a,b] [--approve-repos x] [--fix 1,3 --answer-only 2 --skip 4]
   devflow resume <run_id> [--reopen]      devflow abort <run_id> [--note "..."]
   devflow status <run_id>                 devflow show <run_id>          devflow runs
+  devflow worktrees                       devflow worktree-clean <ticket> [--repo api-service]
 """
 import argparse
 import sys
@@ -84,7 +85,11 @@ def main(argv: list[str] | None = None) -> None:
 
     _add_implement_commands(sub)
     args = p.parse_args(argv)
-    result = args.fn(args)
+    from .jira_implement.runner import RunConflict
+    try:
+        result = args.fn(args)
+    except RunConflict as e:
+        raise SystemExit(str(e)) from None
     if result is not None:
         print(result)
 
@@ -175,6 +180,33 @@ def _add_implement_commands(sub) -> None:
     sw = sub.add_parser("show", help="audit log and side-effect ledger of a run")
     common(sw)
     sw.set_defaults(fn=lambda a: json.dumps(_session(a).show(a.run_id), indent=2, default=str))
+
+    sk = sub.add_parser("worktrees", help="every devflow worktree: ticket, repo, branch, uncommitted changes, size")
+    common(sk, run=False)
+
+    def do_worktrees(a):
+        from .jira_implement import worktrees
+        from .jira_implement.runner import load
+        rows = worktrees.list_all(load(a.workspace))
+        return "\n".join(f"{r['ticket']:<12} {r['repo']:<20} {r['branch']:<14} {'dirty' if r['dirty'] else 'clean':<6} "
+                         f"{r['size_bytes'] // 1_000_000:>6} MB  {r['path']}" for r in rows) or "No worktrees."
+    sk.set_defaults(fn=do_worktrees)
+
+    sc = sub.add_parser("worktree-clean", help="remove a finished ticket's clean worktrees (never forced, branches are kept)")
+    sc.add_argument("ticket")
+    sc.add_argument("--repo", help="only this repo")
+    common(sc, run=False)
+
+    def do_clean(a):
+        from .jira_implement import worktrees
+        from .jira_implement.runner import Session, load
+        ws = load(a.workspace)
+        busy = Session(ws).store.active_runs(a.ticket)
+        if busy:
+            raise SystemExit(f"{a.ticket} has an unfinished run {busy[0]['run_id']} ({busy[0]['status']}); finish or abort it first")
+        rows = [r for r in worktrees.list_all(ws) if r["ticket"] == a.ticket and (not a.repo or r["repo"] == a.repo)]
+        return "\n".join(f"removed {worktrees.remove(ws, a.ticket, r['repo'])}" for r in rows) or "Nothing to remove."
+    sc.set_defaults(fn=do_clean)
 
     sl = sub.add_parser("runs", help="recent runs")
     common(sl, run=False)

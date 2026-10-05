@@ -28,6 +28,9 @@ repos:
       typecheck: pnpm tsc --noEmit
       test: pnpm test
       run: pnpm dev
+    setup_commands: [pnpm install --frozen-lockfile]   # run once in each fresh worktree
+    copy_files: [.env.local]        # copied from your clone into each fresh worktree (untracked local files)
+    parallel_checks: false          # its tests use a fixed port: checks run one ticket at a time
 
 # MCP servers. Jira needs read + write; Confluence is only ever READ (write tools are never exposed).
 mcp_servers:
@@ -58,6 +61,11 @@ review_status: Code Review
 vcs_prefix: rtk                     # every git/glab call is `rtk git ...` / `rtk glab ...`
 state_dir: .devflow                 # SQLite checkpoints, audit log and side-effect ledger
 max_fix_attempts: 3                 # automated fix attempts per repo for a whole run, never reset
+
+# Parallel runs. `repos[].path` above is your own clone: devflow never edits or switches it. Each ticket works in
+# its own git worktree, <worktree_root>/<TICKET>/<repo>, so several tickets can run at once.
+worktree_root: ~/devflow-worktrees
+max_parallel_runs: 3                # `devflow ui` runs this many at once and queues the rest
 
 # Models and global Claude Code skills per step (defaults in src/dev_workflows/routing.py; run `devflow setup`).
 # Effort is always medium and cannot be changed here.

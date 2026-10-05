@@ -20,7 +20,8 @@ class Store:
     def __init__(self, path: str):
         self.path = path
         self._lock = threading.Lock()
-        self._conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
+        self._conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None, timeout=30)
+        self._conn.execute("PRAGMA journal_mode=WAL")  # several runs (threads or processes) write at once
         self._conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS devflow_runs (
@@ -68,6 +69,11 @@ class Store:
 
     def runs(self, limit: int = 20) -> list[dict]:
         ids = [r[0] for r in self._exec("SELECT run_id FROM devflow_runs ORDER BY updated_at DESC LIMIT ?", (limit,))]
+        return [self.run(i) for i in ids]
+
+    def active_runs(self, ticket: str) -> list[dict]:
+        """Runs of this ticket that are not finished (a FAILED or stale run still owns its worktree)."""
+        ids = [r[0] for r in self._exec("SELECT run_id FROM devflow_runs WHERE ticket=? AND status NOT IN ('ABORTED','COMPLETED')", (ticket,))]
         return [self.run(i) for i in ids]
 
     def audit(self, run_id: str, kind: str, data: dict) -> None:

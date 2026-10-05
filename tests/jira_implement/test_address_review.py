@@ -7,7 +7,7 @@ from langgraph.types import Command
 from dev_workflows.jira_implement.address_review import build_review_graph
 from dev_workflows.jira_implement.models import ReviewFixPlan, ReviewTriage, ThreadPlan
 
-from .harness import FakeCoder, FakeLLM, glab_db, make_deps, make_env, seed_review, sh
+from .harness import FakeCoder, FakeLLM, glab_db, make_deps, make_env, seed_review, sh, wt
 
 T_WEB, T_API = "aa11", "bb22"
 
@@ -51,7 +51,7 @@ def test_fix_one_thread_answer_another_then_push_reply_and_refresh_jira(tmp_path
     ws, g, cfg, out, store, mcp, coder = setup(tmp_path, [plan(T_WEB, "web", "fix"), plan(T_API, "api", "answer", reply="Product asked for it.")])
     assert at(out) == "triage"
     assert sorted(t["proposed_action"] for t in out["__interrupt__"][0].value["payload"]["threads"]) == ["answer", "fix"]
-    api_head = sh("git", "-C", ws.repos["api"].path, "rev-parse", "HEAD")
+    api_head = sh("git", "-C", ws.repos["api"].path, "rev-parse", "AQS-1")
     out = answer(g, cfg, choice="approve")
     assert at(out) == "manual_retest"  # the fix changes behaviour, so you test again
     assert [c[1] for c in coder.calls if c[0] == "implement"] == ["web"]  # only the repo that must change
@@ -60,7 +60,7 @@ def test_fix_one_thread_answer_another_then_push_reply_and_refresh_jira(tmp_path
     assert at(out) == "approve_push"
     out = answer(g, cfg, choice="approve")
     assert "completed" in out["output"]
-    web = ws.repos["web"].path
+    web = wt(ws, "web")
     assert sh("git", "--git-dir", str(tmp_path / "origin/web.git"), "rev-parse", "AQS-1") == sh("git", "-C", web, "rev-parse", "HEAD")
     assert "AQS-1: address review comments" in sh("git", "-C", web, "log", "-1", "--format=%B")
     assert sh("git", "--git-dir", str(tmp_path / "origin/api.git"), "rev-parse", "AQS-1") == api_head  # api untouched

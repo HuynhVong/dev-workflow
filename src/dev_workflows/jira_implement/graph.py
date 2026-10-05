@@ -5,6 +5,8 @@ mirrored in the audit log. Every human checkpoint is two nodes: `<name>` records
 payload, `<name>_wait` calls interrupt(). Abort is offered at every checkpoint and routes to `abort`,
 which ends the graph before any later side effect.
 """
+import contextlib
+import fcntl
 import json
 import operator
 import os
@@ -21,6 +23,7 @@ from typing_extensions import NotRequired, TypedDict
 from ..llm import AsStep, StructuredLLM
 from ..routing import Routing
 from . import dag as dagmod
+from . import worktrees
 from .coding_agent import ClaudeCodeAgent, CodingAgent
 from .confluence import ConfluenceReader, page_ids_from_urls
 from .jira import JiraGateway, marker
@@ -112,7 +115,7 @@ class Deps:
     confluence: ConfluenceReader
     coder_factory: Callable[[ScopeGuard], CodingAgent] = field(default=None)  # type: ignore[assignment]
     vcs_runner: Callable | None = None
-    cmd_runner: Callable[[str, str], subprocess.CompletedProcess] | None = None
+    cmd_runner: Callable[..., subprocess.CompletedProcess] | None = None  # (cmd, cwd, env=None)
     which: Callable[[str], str | None] = shutil.which
     routing: Routing = field(default_factory=Routing)
 
@@ -127,10 +130,36 @@ class Deps:
         playwright = {k: v for k, v in self.workspace.mcp_servers.items() if "playwright" in k.lower()}
         return ClaudeCodeAgent(scope, routing=self.routing, mcp_servers=playwright)
 
-    def run_cmd(self, cmd: str, cwd: str) -> subprocess.CompletedProcess:
+    def run_cmd(self, cmd: str, cwd: str, env: dict | None = None) -> subprocess.CompletedProcess:
+        """`env` adds variables (e.g. DEVFLOW_WORKTREE_<REPO>) on top of the current environment."""
         if self.cmd_runner:
-            return self.cmd_runner(cmd, cwd)
-        return subprocess.run(cmd, shell=True, cwd=cwd, capture_output=True, text=True, timeout=1800)
+            return self.cmd_runner(cmd, cwd, env)
+        return subprocess.run(cmd, shell=True, cwd=cwd, capture_output=True, text=True, timeout=1800,
+                              env={**os.environ, **env} if env else None)
+
+    def source_vcs(self, repos) -> Vcs:
+        """The developer's main clones: only fetched from and used to add worktrees, never edited or switched."""
+        return worktrees.source_vcs(self.workspace, list(repos), self.vcs_runner)
+
+    def worktree(self, state: dict, repo: str) -> str:
+        """Create or reuse this run's worktree for `repo` (used when scope widens mid-run too)."""
+        return worktrees.ensure(self.source_vcs([repo]), self.workspace, self.store, state["run_id"], state["ticket_key"],
+                                repo, self.run_cmd)
+
+    @contextlib.contextmanager
+    def repo_lock(self, repo: str):
+        """Repos with `parallel_checks: false` run their checks one run at a time, across processes."""
+        if self.workspace.repo(repo).parallel_checks:
+            yield
+            return
+        lock_dir = Path(self.workspace.state_dir, "locks")
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        with open(lock_dir / f"{repo}.lock", "w") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def _j(obj: Any) -> str:
@@ -208,8 +237,9 @@ IMPLEMENT_STEPS = ("gather_context", "analyze_requirements", "change_impact", "d
 
 
 def check_environment(deps: "Deps", state: dict, need_confluence: bool, steps: tuple[str, ...] = IMPLEMENT_STEPS) -> tuple[ScopeGuard, list[str]]:
-    """Preflight shared by the workflows: tools installed, MCPs reachable, repos clean and reachable, ticket readable.
-    Raises PreflightFailed with every gap at once; returns the frozen scope and non-blocking warnings."""
+    """Preflight shared by the workflows: tools installed, MCPs reachable, repos reachable, worktrees free, ticket
+    readable. Raises PreflightFailed with every gap at once; returns the frozen scope (repo -> this run's worktree
+    path) and non-blocking warnings. The main clones are only read, so they may have uncommitted work."""
     ws = deps.workspace
     gaps, warnings = [], []
     requested = state.get("requested_repos") or list(ws.repos)
@@ -217,8 +247,7 @@ def check_environment(deps: "Deps", state: dict, need_confluence: bool, steps: t
     if unknown:
         gaps.append(f"--repos names not in workspace.yaml: {unknown}")
     repos = {r: ws.repos[r].path for r in requested if r in ws.repos}
-    scope = ScopeGuard.create(repos)
-    st = {**state, "scope": scope.to_state()}
+    scope = ScopeGuard.create({r: ws.worktree(state["ticket_key"], r) for r in repos})
     prefix = ws.vcs_prefix.split()[0] if ws.vcs_prefix else ""
     if prefix and not deps.which(prefix):
         gaps.append(f"'{prefix}' is not installed (every git/glab call goes through it)")
@@ -240,20 +269,22 @@ def check_environment(deps: "Deps", state: dict, need_confluence: bool, steps: t
         except Exception as e:  # noqa: BLE001
             gaps.append(f"Confluence MCP unreachable: {e}")
     if repos and not gaps:
-        vcs = deps.vcs(st)
+        vcs = deps.source_vcs(repos)
         first = next(iter(repos))
         for args in (("git", "--version"), ("glab", "auth", "status")):
             r = vcs.run(first, *args, check=False)
             if r.returncode != 0:
                 gaps.append(f"`{ws.vcs_prefix} {' '.join(args)}` failed: {(r.stderr or r.stdout).strip()[:200]}")
+        ok_repos = []
         for name, path in repos.items():
             if not Path(path, ".git").exists():
                 gaps.append(f"{name}: {path} is not a git repository")
                 continue
-            if vcs.is_dirty(name):
-                gaps.append(f"{name}: has uncommitted changes; commit or stash them first")
             if vcs.run(name, "git", "ls-remote", "--heads", "origin", check=False).returncode != 0:
                 gaps.append(f"{name}: cannot reach origin")
+                continue
+            ok_repos.append(name)
+        gaps += worktrees.gaps(vcs, ws, state["ticket_key"], ok_repos)
     if not gaps:
         try:
             status, assignee = deps.jira.status_and_assignee(state["ticket_key"])
@@ -270,6 +301,18 @@ def check_environment(deps: "Deps", state: dict, need_confluence: bool, steps: t
         warnings.append("global Claude Code skills not installed (steps run without them): "
                         + "; ".join(f"{s}: {', '.join(m)}" for s, m in missing.items()))
     return scope, warnings
+
+
+def run_repo_checks(deps: "Deps", repo: str, scope: dict) -> tuple[bool, list[dict]]:
+    """The repo's own lint/typecheck/test/build in the run's worktree; the first failure stops the list."""
+    results = []
+    with deps.repo_lock(repo):
+        for name, cmd in deps.workspace.repo(repo).check_commands:
+            r = deps.run_cmd(cmd, scope[repo], worktrees.env_for(scope))
+            results.append({"check": name, "ok": r.returncode == 0, "output": _tail((r.stdout or "") + (r.stderr or ""), 3000)})
+            if r.returncode != 0:
+                return False, results
+    return True, results
 
 
 def route_feedback(fa: FeedbackAnalysis, scope: dict, repos: dict, edges: list[tuple], cap: int):
@@ -316,6 +359,11 @@ def build_graph(deps: Deps, checkpointer=None):
                 "integration_version": -1, "manual_test_version": -1, "review_version": -1}
 
     node("preflight", preflight)
+
+    def prepare_worktrees(state):
+        return {"scope": ScopeGuard.create({r: deps.worktree(state, r) for r in state["scope"]}).to_state()}
+
+    node("prepare_worktrees", prepare_worktrees)
 
     # ------------------------------------------------------------------ Phase 1
     def fetch_ticket(state):
@@ -416,7 +464,7 @@ def build_graph(deps: Deps, checkpointer=None):
         gaps = []
         for req in state.get("scope_requests", []):
             if req["repo"] in approved and req["repo"] in ws.repos:
-                scope[req["repo"]] = ws.repos[req["repo"]].path
+                scope[req["repo"]] = deps.worktree(state, req["repo"])
                 store.audit(state["run_id"], "scope_widened", req)
             else:
                 gaps.append({**req, "decision": "denied"})
@@ -516,10 +564,9 @@ def build_graph(deps: Deps, checkpointer=None):
 
     def _ensure_branch(vcs: Vcs, repo, base, key, run_id, recorded_base, approved) -> dict:
         def create():
+            # In the run's worktree: cut <KEY> from a freshly fetched develop (the main clone is never switched).
             vcs.git(repo, "fetch", "origin")
-            vcs.git(repo, "checkout", base)
-            vcs.git(repo, "pull", "origin", base)
-            vcs.git(repo, "checkout", "-b", key)
+            vcs.git(repo, "checkout", "--no-track", "-b", key, f"origin/{base}")
             sha = vcs.head(repo)
             vcs.git(repo, "config", f"branch.{key}.devflow-run", run_id)
             vcs.git(repo, "config", f"branch.{key}.devflow-base", sha)
@@ -605,21 +652,14 @@ def build_graph(deps: Deps, checkpointer=None):
     g.add_conditional_edges("schedule", route_schedule,
                             ["implement_repo", "scope_request", "budget_exhausted", "integration_check", "manual_test", "repo_review", "approve_push"])
 
-    def run_checks(repo: str) -> tuple[bool, list[dict]]:
-        cfg = ws.repo(repo)
-        results = []
-        for name, cmd in cfg.check_commands:
-            r = deps.run_cmd(cmd, cfg.path)
-            results.append({"check": name, "ok": r.returncode == 0, "output": _tail((r.stdout or "") + (r.stderr or ""), 3000)})
-            if r.returncode != 0:
-                return False, results
-        return True, results
+    def run_checks(repo: str, scope: dict) -> tuple[bool, list[dict]]:
+        return run_repo_checks(deps, repo, scope)
 
     def implement_repo(payload):
         repo, rs = payload["repo"], dict(payload["repo_state"])
         st = {"scope": payload["scope"]}
         coder, vcs, cap = deps.coder(st), deps.vcs(st), ws.max_fix_attempts
-        cfg = ws.repo(repo)
+        path = payload["scope"][repo]
         changed = 0
         mode = rs["status"]
         feedback: list[str] = list(rs.get("fix_instructions", []))
@@ -632,7 +672,7 @@ def build_graph(deps: Deps, checkpointer=None):
                     rs["fix_attempts_used"] = rs.get("fix_attempts_used", 0) + 1
                 upstream = {u: _tail(vcs.diff_against(u, ws.repo(u).base_branch), 15000) for u in payload["upstream"]}
                 instructions = _implement_prompt(payload, repo, rs, feedback, upstream)
-                res = coder.implement(repo, cfg.path, instructions, step="targeted_fix" if rs.get("fix_attempts_used") else "implement",
+                res = coder.implement(repo, path, instructions, step="targeted_fix" if rs.get("fix_attempts_used") else "implement",
                                       escalate=rs.get("fix_attempts_used", 0) >= cap)  # the last attempt gets the stronger model
                 rs["implemented"], changed = True, changed + 1
                 rs["summary"] = res.summary
@@ -642,7 +682,7 @@ def build_graph(deps: Deps, checkpointer=None):
                     rs["scope_needs"] = needs
                     rs["status"] = "needs_scope"
                     break
-            ok, results = run_checks(repo)
+            ok, results = run_checks(repo, payload["scope"])
             rs["checks"] = results
             if ok:
                 rs["status"], rs["fix_instructions"] = "ready", []
@@ -698,7 +738,7 @@ def build_graph(deps: Deps, checkpointer=None):
             scope = dict(state["scope"])
             for req in reqs:
                 if req["repo"] in ws.repos:
-                    scope[req["repo"]] = ws.repos[req["repo"]].path
+                    scope[req["repo"]] = deps.worktree(state, req["repo"])
                     store.audit(state["run_id"], "scope_widened", req)
             return {"scope": ScopeGuard.create(scope).to_state(), "scope_requests": [], "repos": cleared,
                     "plan_notes": [f"Scope widened by the developer to include {sorted({r['repo'] for r in reqs})}: {_j(reqs)}"]}
@@ -725,7 +765,7 @@ def build_graph(deps: Deps, checkpointer=None):
             for r in nodes:
                 cmd = ws.repo(r).commands.get(kind)
                 if cmd:
-                    res = deps.run_cmd(cmd, ws.repo(r).path)
+                    res = deps.run_cmd(cmd, state["scope"][r], worktrees.env_for(state["scope"]))
                     out = _tail((res.stdout or "") + (res.stderr or ""), 3000)
                     report["commands"].append({"repo": r, "check": kind, "ok": res.returncode == 0, "output": out})
                     if res.returncode != 0:
@@ -740,7 +780,7 @@ def build_graph(deps: Deps, checkpointer=None):
             report["contracts"] = cc.model_dump()
             feedback += [{"source": "integration", "repos": i.repos, "text": i.issue} for i in cc.issues]
         if not feedback and imp["e2e_required"] and not has("e2e"):
-            repos = {r: ws.repo(r).path for r in nodes}
+            repos = {r: state["scope"][r] for r in nodes}
             run_cmds = {r: ws.repo(r).commands.get("run", "") for r in repos}
             res = deps.coder(state).verify(repos, step="integration_check", instructions=(
                 f"Start the services with these commands: {_j(run_cmds)}. Using the Playwright MCP tools, walk each acceptance "
@@ -762,7 +802,7 @@ def build_graph(deps: Deps, checkpointer=None):
     # --- manual test (mandatory) -------------------------------------------------
     def manual_payload(state):
         criteria = state["analysis"]["acceptance_criteria"] + state["impact"]["manual_test_focus"]
-        return {"repos": {r: {"path": ws.repo(r).path, "branch": state["ticket_key"], "changed_files": rs.get("diff_files", []),
+        return {"repos": {r: {"path": state["scope"][r], "branch": state["ticket_key"], "changed_files": rs.get("diff_files", []),
                               "run": ws.repo(r).commands.get("run", "")} for r, rs in state["repos"].items()},
                 "checklist": criteria, "integration": state.get("integration_report", {}),
                 "hint": "Nothing is committed yet. ok = it works; feedback = describe what's wrong (name repos if you know them)."}
@@ -1016,7 +1056,8 @@ def build_graph(deps: Deps, checkpointer=None):
     kit.add_abort()
 
     g.add_edge(START, "preflight")
-    g.add_edge("preflight", "fetch_ticket")
+    g.add_edge("preflight", "prepare_worktrees")
+    g.add_edge("prepare_worktrees", "fetch_ticket")
     g.add_edge("fetch_ticket", "gather_context")
     g.add_edge("gather_context", "analyze_requirements")
     g.add_edge("analyze_requirements", "change_impact")

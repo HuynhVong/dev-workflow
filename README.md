@@ -29,6 +29,7 @@ src/dev_workflows/
     jira.py              ticket fetch + the idempotent Jira writes (status forward-only, one comment)
     ledger.py            run registry, audit log, write-ahead side-effect ledger (SQLite)
     runner.py            start / answer / resume / abort / status for the CLI
+    worktrees.py         one git worktree per run per repo (parallel tickets)
 docs/                  jira-ticket-implement-design.md (the approved design)
 tests/                 offline tests with a fake LLM (no API key needed)
 langgraph.json         lets `langgraph dev` / LangGraph Studio load all graphs
@@ -76,6 +77,21 @@ devflow show   AQS-5512-20261005-101500                       # audit log + side
 devflow address-review AQS-5512                               # after reviewers comment on the draft MRs
 devflow answer <run_id> --choice edit --fix 1,3 --answer-only 2 --skip 4
 ```
+
+### Parallel runs (git worktrees)
+
+`repos[].path` in `workspace.yaml` is your own clone: devflow only fetches from it and adds worktrees, it never edits
+or switches it, so it can have work in progress. Every ticket works in its own worktree,
+`<worktree_root>/<TICKET>/<repo>` (default `~/devflow-worktrees`), cut from a freshly fetched `develop`. So you can run
+`devflow implement AQS-5512` and `devflow implement AQS-5513` at the same time. Rules:
+
+- One unfinished run per ticket. A ticket branch can only be checked out in one place, so preflight stops if your
+  own clone has it checked out.
+- `setup_commands` (e.g. `npm ci`) and `copy_files` (e.g. `.env.local`) per repo prepare a fresh worktree once.
+- Check commands get `DEVFLOW_WORKTREE_<REPO>` pointing at the run's sibling worktrees. A repo with
+  `parallel_checks: false` (fixed ports, a shared local database) runs its checks one ticket at a time.
+- Worktrees are never removed automatically: `devflow worktrees` lists them, `devflow worktree-clean AQS-5512`
+  removes a finished ticket's clean worktrees (never forced; the branch stays).
 
 What the workflows never do: edit Confluence, send mail, read or trigger CI/CD pipelines, force-push, rebase,
 delete branches, merge, approve or un-draft MRs, resolve review threads, or touch a repo outside `--repos` without
