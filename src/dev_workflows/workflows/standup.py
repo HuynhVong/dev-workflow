@@ -63,7 +63,7 @@ def build_graph(llm: StructuredLLM | None = None, checkpointer=None):
             f"<notes>\n{state.get('notes') or '(none)'}\n</notes>\n\n"
             "Write my standup. Infer 'today' from unfinished work and my notes; leave lists empty rather than guess."
         )
-        return {"standup": get_llm().structured(SYSTEM, prompt, Standup)}
+        return {"standup": get_llm().structured(SYSTEM, prompt, Standup, step="standup")}
 
     def render(state: State):
         s = state["standup"]

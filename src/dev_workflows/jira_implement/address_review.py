@@ -12,6 +12,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 from typing_extensions import TypedDict
 
+from ..llm import AsStep
 from . import dag as dagmod
 from .graph import SYSTEM, TRANSIENT, Deps, GraphKit, _j, _tail, check_environment, merge_repos, route_feedback
 from .jira import marker
@@ -20,6 +21,8 @@ from .models import ContractCheck, ContractReview, FeedbackAnalysis, ReviewFixPl
 from .vcs import Vcs
 
 WORKFLOW = "address_review"
+REVIEW_STEPS = ("classify_comments", "map_to_repos", "targeted_fix", "integration_check", "repo_review", "contract_review",
+                "analyze_feedback_and_route")
 REPLY_MARK = "<!-- devflow:{run_id}:{thread} -->"
 
 
@@ -73,7 +76,7 @@ def build_review_graph(deps: Deps, checkpointer=None):
 
     # 0 -------------------------------------------------------------------------------------------
     def preflight(state):
-        scope, warnings = check_environment(deps, state, need_confluence=False)
+        scope, warnings = check_environment(deps, state, need_confluence=False, steps=REVIEW_STEPS)
         store.audit(state["run_id"], "preflight", {"scope": scope.to_state(), "warnings": warnings})
         return {"scope": scope.to_state(), "env_warnings": warnings, "code_version": 0,
                 "integration_version": -1, "manual_test_version": -1, "review_version": -1}
@@ -127,7 +130,7 @@ def build_review_graph(deps: Deps, checkpointer=None):
             "Classify every thread (one item per thread_id): must_fix, suggestion, question, out_of_scope, or disagree "
             "(say why in reply). Propose fix, answer or skip. repo is the repo that must change; it may differ from the "
             "thread's repo (e.g. a frontend comment that needs a backend change), but only from repos_in_scope. Draft a short, "
-            "polite reply for each thread."), ReviewTriage)
+            "polite reply for each thread."), ReviewTriage, step="classify_comments")
         by_id = {t["id"]: t for t in state["threads"]}
         items = []
         for n, it in enumerate([i for i in tr.items if i.thread_id in by_id], start=1):
@@ -154,6 +157,7 @@ def build_review_graph(deps: Deps, checkpointer=None):
     checkpoint("triage", lambda s: {
         "threads": [{k: i[k] for k in ("n", "category", "repo", "file", "line", "comment", "summary", "proposed_action", "reply")}
                     for i in s["triage"]],
+        "warnings": s.get("env_warnings", []),
         "hint": "approve = take the proposed actions; edit = set fix / answer / skip lists (thread numbers), note = "
                 "extra instructions for every fix. Replies are posted only after approve_push (or right away when nothing "
                 "needs code). Threads are never resolved by the workflow."}, ["approve", "edit", "abort"])
@@ -190,7 +194,7 @@ def build_review_graph(deps: Deps, checkpointer=None):
         if len(repos) > 1:
             fp = llm.structured(SYSTEM, (f"<fixes>{_j(fixes)}</fixes>\n<repos>{repos}</repos>\n\nWhich of these repos must be fixed "
                                          "before another (e.g. a backend contract the frontend follows)? Only edges between these repos."),
-                                ReviewFixPlan)
+                                ReviewFixPlan, step="map_to_repos")
             edges = [(e.upstream, e.downstream) for e in fp.edges]
             integration = integration or fp.integration_required
             if dagmod.validate(repos, edges, set(state["scope"])):
@@ -281,7 +285,7 @@ def build_review_graph(deps: Deps, checkpointer=None):
                     rs["fix_attempts_used"] = rs.get("fix_attempts_used", 0) + 1
                 upstream = "".join(f"<upstream_repo name='{u}' already_fixed='true'>\n{_tail(_round_diff(vcs, u, b), 15000)}\n</upstream_repo>\n"
                                    for u, b in payload["upstream_base"].items())
-                res = coder.implement(repo, cfg.path, (
+                res = coder.implement(repo, cfg.path, step="targeted_fix", escalate=rs.get("fix_attempts_used", 0) >= cap, instructions=(
                     f"Ticket {payload['ticket_key']}: address code review comments on branch {payload['ticket_key']}.\n{upstream}"
                     "<fix_this>\n" + "\n---\n".join(feedback) + "\n</fix_this>\n"
                     "Change only what these comments need. Keep the rest of the branch as it is. Update tests when behaviour changes."))
@@ -327,11 +331,23 @@ def build_review_graph(deps: Deps, checkpointer=None):
 
     # 8 -------------------------------------------------------------------------------------------
     def integration_check(state):
-        cc = llm.structured(SYSTEM, f"<review_fixes>{fixes_block(state)}</review_fixes>\n<diffs_this_round>{_j(diffs(state))}</diffs_this_round>\n\n"
-                            "Check that producer and consumer repos still agree after these review fixes (routes, fields, types, "
-                            "events, migrations).", ContractCheck)
-        feedback = [{"source": "integration", "repos": i.repos, "text": i.issue} for i in cc.issues]
-        update = {"integration_report": cc.model_dump(), "pending_feedback": feedback}
+        """No AI first: the repos' own `integration` commands run first; the AI contract check only when none is set."""
+        nodes, feedback, report = state["dag"]["nodes"], [], {"commands": []}
+        for r in nodes:
+            cmd = ws.repo(r).commands.get("integration")
+            if cmd:
+                res = deps.run_cmd(cmd, ws.repo(r).path)
+                out = _tail((res.stdout or "") + (res.stderr or ""), 3000)
+                report["commands"].append({"repo": r, "ok": res.returncode == 0, "output": out})
+                if res.returncode != 0:
+                    feedback.append({"source": "integration", "repos": [r], "text": f"`{cmd}` failed:\n{out}"})
+        if not report["commands"]:
+            cc = llm.structured(SYSTEM, f"<review_fixes>{fixes_block(state)}</review_fixes>\n<diffs_this_round>{_j(diffs(state))}</diffs_this_round>\n\n"
+                                "Check that producer and consumer repos still agree after these review fixes (routes, fields, types, "
+                                "events, migrations).", ContractCheck, step="integration_check")
+            report["contracts"] = cc.model_dump()
+            feedback = [{"source": "integration", "repos": i.repos, "text": i.issue} for i in cc.issues]
+        update = {"integration_report": report, "pending_feedback": feedback}
         if not feedback:
             update["integration_version"] = state.get("code_version", 0)
         return update
@@ -358,7 +374,7 @@ def build_review_graph(deps: Deps, checkpointer=None):
     # 10 ------------------------------------------------------------------------------------------
     def repo_review(state):
         from ..workflows import pr_review
-        reviewer = pr_review.build_graph(llm)
+        reviewer = pr_review.build_graph(AsStep(llm, "repo_review"))
         reviews, feedback = {}, []
         for repo, diff in diffs(state, 60000).items():
             out = reviewer.invoke({"title": f"{state['ticket_key']} review fixes ({repo})", "description": fixes_block(state),
@@ -373,7 +389,7 @@ def build_review_graph(deps: Deps, checkpointer=None):
         cr = llm.structured(SYSTEM, (f"<review_fixes>{fixes_block(state)}</review_fixes>\n<merge_order>{state['dag']['merge_order']}</merge_order>\n"
                                      f"<diffs_this_round>{_j(diffs(state))}</diffs_this_round>\n\nCross-repo review of these fixes: contracts "
                                      "still agree, migrations match, merge order still safe, and each thread's ask is actually addressed. "
-                                     "Only real blockers."), ContractReview)
+                                     "Only real blockers."), ContractReview, step="contract_review")
         feedback = list(state.get("pending_feedback") or []) + [{"source": "contract_review", "repos": b.repos, "text": b.issue} for b in cr.blockers]
         update = {"contract_review": cr.model_dump(), "pending_feedback": feedback}
         if not feedback:
@@ -397,7 +413,7 @@ def build_review_graph(deps: Deps, checkpointer=None):
             + (f"<developer_answers>{answers}</developer_answers>\n" if answers else "")
             + f"<feedback>{_j(items_in)}</feedback>\n\nClassify each feedback item: which repos must change, the cause and your "
             "confidence. requirement_gap when the ask itself is unclear, scope_issue when a repo outside repos_in_scope must "
-            "change, unclear when the evidence does not point to a cause."), FeedbackAnalysis)
+            "change, unclear when the evidence does not point to a cause."), FeedbackAnalysis, step="analyze_feedback_and_route")
         fixes, ask, outside = route_feedback(fa, repos, repos, [tuple(e) for e in state["dag"]["edges"]], ws.max_fix_attempts)
         ask += [{"source": "analyzer", "category": "scope_issue", "repos": [o["repo"]], "cause": o["reason"],
                  "why_asking": "outside the repos being fixed in this round"} for o in outside]

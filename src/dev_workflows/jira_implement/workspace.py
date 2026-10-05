@@ -52,6 +52,7 @@ class Workspace:
     vcs_prefix: str = "rtk"
     state_dir: str = ".devflow"
     max_fix_attempts: int = 3
+    ai: dict = field(default_factory=dict)  # per-step models and skills, see dev_workflows.routing
 
     def repo(self, name: str) -> RepoConfig:
         return self.repos[name]
@@ -87,6 +88,7 @@ def load_workspace(path: str | Path) -> Workspace:
         vcs_prefix=raw.get("vcs_prefix", "rtk"),
         state_dir=str(state_dir),
         max_fix_attempts=int(raw.get("max_fix_attempts", 3)),
+        ai=dict(raw.get("ai") or {}),
     )
 
 

@@ -18,7 +18,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import RetryPolicy, Send, interrupt
 from typing_extensions import NotRequired, TypedDict
 
-from ..llm import StructuredLLM
+from ..llm import AsStep, StructuredLLM
+from ..routing import Routing
 from . import dag as dagmod
 from .coding_agent import ClaudeCodeAgent, CodingAgent
 from .confluence import ConfluenceReader, page_ids_from_urls
@@ -113,6 +114,7 @@ class Deps:
     vcs_runner: Callable | None = None
     cmd_runner: Callable[[str, str], subprocess.CompletedProcess] | None = None
     which: Callable[[str], str | None] = shutil.which
+    routing: Routing = field(default_factory=Routing)
 
     def vcs(self, state: dict) -> Vcs:
         kw = {"runner": self.vcs_runner} if self.vcs_runner else {}
@@ -123,7 +125,7 @@ class Deps:
         if self.coder_factory:
             return self.coder_factory(scope)
         playwright = {k: v for k, v in self.workspace.mcp_servers.items() if "playwright" in k.lower()}
-        return ClaudeCodeAgent(scope, mcp_servers=playwright)
+        return ClaudeCodeAgent(scope, routing=self.routing, mcp_servers=playwright)
 
     def run_cmd(self, cmd: str, cwd: str) -> subprocess.CompletedProcess:
         if self.cmd_runner:
@@ -201,7 +203,11 @@ class GraphKit:
         self.g.add_edge("abort", END)
 
 
-def check_environment(deps: "Deps", state: dict, need_confluence: bool) -> tuple[ScopeGuard, list[str]]:
+IMPLEMENT_STEPS = ("gather_context", "analyze_requirements", "change_impact", "discover_repos", "plan_implementation", "implement",
+                   "targeted_fix", "analyze_feedback_and_route", "integration_check", "repo_review", "contract_review", "summary")
+
+
+def check_environment(deps: "Deps", state: dict, need_confluence: bool, steps: tuple[str, ...] = IMPLEMENT_STEPS) -> tuple[ScopeGuard, list[str]]:
     """Preflight shared by the workflows: tools installed, MCPs reachable, repos clean and reachable, ticket readable.
     Raises PreflightFailed with every gap at once; returns the frozen scope and non-blocking warnings."""
     ws = deps.workspace
@@ -259,6 +265,10 @@ def check_environment(deps: "Deps", state: dict, need_confluence: bool) -> tuple
             gaps.append(f"cannot read {state['ticket_key']} from Jira: {e}")
     if gaps:
         raise PreflightFailed(gaps)
+    missing = {s: m for s, m in deps.routing.missing().items() if s in steps}
+    if missing:  # the step still runs, just without that skill; `devflow setup` lists what to install
+        warnings.append("global Claude Code skills not installed (steps run without them): "
+                        + "; ".join(f"{s}: {', '.join(m)}" for s, m in missing.items()))
     return scope, warnings
 
 
@@ -336,7 +346,7 @@ def build_graph(deps: Deps, checkpointer=None):
             "section for every point. List conflicts between Confluence and the Jira text. "
             + ("" if confirmed else "These pages were found by search, not linked: mark every page confirmed=false.")
         )
-        ctx = llm.structured(SYSTEM, prompt, RequirementContext, images=t.get("images", []))
+        ctx = llm.structured(SYSTEM, prompt, RequirementContext, images=t.get("images", []), step="gather_context")
         return {"context": ctx.model_dump(), "existing_mrs": mrs}
 
     node("gather_context", gather_context, retry_policy=TRANSIENT)
@@ -351,7 +361,7 @@ def build_graph(deps: Deps, checkpointer=None):
 
     def analyze_requirements(state):
         a = llm.structured(SYSTEM, _ticket_block(state) + "\n\nAnalyze the requirement. Only list questions that genuinely block planning.",
-                           Analysis, images=state["ticket"].get("images", []))
+                           Analysis, images=state["ticket"].get("images", []), step="analyze_requirements")
         return {"analysis": a.model_dump()}
 
     node("analyze_requirements", analyze_requirements)
@@ -366,7 +376,7 @@ def build_graph(deps: Deps, checkpointer=None):
             "Determine the change impact. candidate_repos must come only from allowed_repos. If another repo seems "
             "required, list it in out_of_scope_repos instead."
         )
-        imp = llm.structured(SYSTEM, prompt, Impact)
+        imp = llm.structured(SYSTEM, prompt, Impact, step="change_impact")
         allowed = set(state["scope"])
         requests = [n.model_dump() for n in imp.out_of_scope_repos]
         requests += [{"repo": r, "reason": "named as a candidate but not in scope"} for r in imp.candidate_repos if r not in allowed]
@@ -426,7 +436,7 @@ def build_graph(deps: Deps, checkpointer=None):
                     "Set confirmed=false if this repository does not need to change.")
         for repo in state["impact"]["candidate_repos"]:
             vcs.git(repo, "fetch", "origin")
-            res = coder.explore(repo, state["scope"][repo], question)
+            res = coder.explore(repo, state["scope"][repo], question, step="discover_repos")
             findings[repo] = {"confirmed": res.ok, "relevant_files": res.files_changed, "notes": res.summary}
             needs += [n for n in res.out_of_scope_needs if n.get("repo") not in state["scope"]]
         return {"repo_findings": findings, "scope_requests": needs}
@@ -446,10 +456,10 @@ def build_graph(deps: Deps, checkpointer=None):
         instr = ("Write the implementation plan. Use only repos_to_plan. Define an explicit dependency DAG between repos "
                  "(e.g. shared library -> backend -> frontend); repos with no dependency get no edge. Fix the shared "
                  "contracts up front so repos can be coded against them. Map every acceptance criterion to tests.")
-        plan = llm.structured(SYSTEM, base + instr, Plan)
+        plan = llm.structured(SYSTEM, base + instr, Plan, step="plan_implementation")
         errors = _plan_errors(plan, state)
         if errors:
-            plan = llm.structured(SYSTEM, base + instr + "\n\nYour previous plan was invalid:\n- " + "\n- ".join(errors), Plan)
+            plan = llm.structured(SYSTEM, base + instr + "\n\nYour previous plan was invalid:\n- " + "\n- ".join(errors), Plan, step="plan_implementation")
             errors = _plan_errors(plan, state)
         nodes = [r.repo for r in plan.repos]
         edges = [(e.upstream, e.downstream) for e in plan.edges]
@@ -622,7 +632,8 @@ def build_graph(deps: Deps, checkpointer=None):
                     rs["fix_attempts_used"] = rs.get("fix_attempts_used", 0) + 1
                 upstream = {u: _tail(vcs.diff_against(u, ws.repo(u).base_branch), 15000) for u in payload["upstream"]}
                 instructions = _implement_prompt(payload, repo, rs, feedback, upstream)
-                res = coder.implement(repo, cfg.path, instructions)
+                res = coder.implement(repo, cfg.path, instructions, step="targeted_fix" if rs.get("fix_attempts_used") else "implement",
+                                      escalate=rs.get("fix_attempts_used", 0) >= cap)  # the last attempt gets the stronger model
                 rs["implemented"], changed = True, changed + 1
                 rs["summary"] = res.summary
                 store.audit(payload["payload_run_id"], "implement", {"repo": repo, "attempt": rs.get("fix_attempts_used", 0), "ok": res.ok})
@@ -706,20 +717,32 @@ def build_graph(deps: Deps, checkpointer=None):
 
     # --- integration / E2E -------------------------------------------------------
     def integration_check(state):
-        vcs, imp = deps.vcs(state), state["impact"]
-        diffs = {r: _tail(vcs.diff_against(r, ws.repo(r).base_branch), 30000) for r in state["dag"]["nodes"]}
-        feedback = []
-        report: dict = {}
-        if imp["integration_required"]:
+        """No AI first: the repos' own `integration` / `e2e` commands run first. The AI contract check and the
+        Claude Code + Playwright walk-through run only for what those commands do not cover."""
+        imp, nodes = state["impact"], state["dag"]["nodes"]
+        feedback, report = [], {"commands": []}
+        for kind in ("integration", "e2e"):
+            for r in nodes:
+                cmd = ws.repo(r).commands.get(kind)
+                if cmd:
+                    res = deps.run_cmd(cmd, ws.repo(r).path)
+                    out = _tail((res.stdout or "") + (res.stderr or ""), 3000)
+                    report["commands"].append({"repo": r, "check": kind, "ok": res.returncode == 0, "output": out})
+                    if res.returncode != 0:
+                        feedback.append({"source": kind, "repos": [r], "text": f"`{cmd}` failed:\n{out}"})
+        has = lambda kind: any(ws.repo(r).commands.get(kind) for r in nodes)  # noqa: E731
+        if not feedback and imp["integration_required"] and not has("integration"):
+            vcs = deps.vcs(state)
+            diffs = {r: _tail(vcs.diff_against(r, ws.repo(r).base_branch), 30000) for r in nodes}
             cc = llm.structured(SYSTEM, f"<contracts>{_j(state['plan']['contracts'])}</contracts>\n<diffs>{_j(diffs)}</diffs>\n\n"
                                 "Check that every repo implements the fixed contracts consistently (producer and consumer agree on "
-                                "routes, fields, types, events, migrations).", ContractCheck)
+                                "routes, fields, types, events, migrations).", ContractCheck, step="integration_check")
             report["contracts"] = cc.model_dump()
             feedback += [{"source": "integration", "repos": i.repos, "text": i.issue} for i in cc.issues]
-        if imp["e2e_required"]:
-            repos = {r: ws.repo(r).path for r in state["dag"]["nodes"]}
+        if not feedback and imp["e2e_required"] and not has("e2e"):
+            repos = {r: ws.repo(r).path for r in nodes}
             run_cmds = {r: ws.repo(r).commands.get("run", "") for r in repos}
-            res = deps.coder(state).verify(repos, (
+            res = deps.coder(state).verify(repos, step="integration_check", instructions=(
                 f"Start the services with these commands: {_j(run_cmds)}. Using the Playwright MCP tools, walk each acceptance "
                 f"criterion and record pass/fail with evidence (save screenshots under each repo's .devflow-evidence/ folder).\n"
                 f"<acceptance_criteria>{_j(state['analysis']['acceptance_criteria'])}</acceptance_criteria>\n"
@@ -761,7 +784,7 @@ def build_graph(deps: Deps, checkpointer=None):
     def repo_review(state):
         from ..workflows import pr_review
         vcs = deps.vcs(state)
-        reviewer = pr_review.build_graph(llm)
+        reviewer = pr_review.build_graph(AsStep(llm, "repo_review"))
         reviews, feedback = {}, []
         for repo in state["dag"]["nodes"]:
             diff = vcs.diff_against(repo, ws.repo(repo).base_branch)
@@ -782,7 +805,7 @@ def build_graph(deps: Deps, checkpointer=None):
             f"<plan>{_j(state['plan'])}</plan>\n<merge_order>{state['dag']['merge_order']}</merge_order>\n"
             f"<acceptance_criteria>{_j(state['analysis']['acceptance_criteria'])}</acceptance_criteria>\n<diffs>{_j(diffs)}</diffs>\n\n"
             "Cross-repo review: producer/consumer contract agreement, migrations matching the code that uses them, a merge "
-            "order that is safe to deploy, and every acceptance criterion covered somewhere. Only real blockers."), ContractReview)
+            "order that is safe to deploy, and every acceptance criterion covered somewhere. Only real blockers."), ContractReview, step="contract_review")
         feedback = list(state.get("pending_feedback") or []) + [{"source": "contract_review", "repos": b.repos, "text": b.issue} for b in cr.blockers]
         update = {"contract_review": cr.model_dump(), "pending_feedback": feedback}
         if not feedback:
@@ -805,7 +828,7 @@ def build_graph(deps: Deps, checkpointer=None):
             f"<repo_status>{_j(status)}</repo_status>\n<feedback>{_j(items_in)}</feedback>\n\n"
             "Classify each feedback item. Decide which repos must change, the cause and your confidence. Use requirement_gap "
             "when the requirement itself is unclear or missing, scope_issue when a repo outside repos_in_scope must change, "
-            "and unclear when the evidence does not point to a cause."), FeedbackAnalysis)
+            "and unclear when the evidence does not point to a cause."), FeedbackAnalysis, step="analyze_feedback_and_route")
         fixes, ask, scope_reqs = route_feedback(fa, state["scope"], repos, [tuple(e) for e in state["dag"]["edges"]], ws.max_fix_attempts)
         if not fa.items:
             ask = [{"source": "analyzer", "category": "unclear", "cause": "no actionable item found", "repos": [], "feedback": items_in, "why_asking": "unclear"}]
@@ -982,7 +1005,7 @@ def build_graph(deps: Deps, checkpointer=None):
             outdated = llm.structured(SYSTEM, (
                 f"<confluence_pages>{_j(pages)}</confluence_pages>\n<requirement_context>{_j(state.get('context'))}</requirement_context>\n"
                 f"<changes>{_j(stat)}</changes>\n\nList Confluence pages that look out of date after this change (the developer cannot "
-                "edit Confluence; the page owner will). Empty if none."), Outdated).model_dump()["pages"]
+                "edit Confluence; the page owner will). Empty if none."), Outdated, step="summary").model_dump()["pages"]
         md = _render_summary(state, outdated)
         store.set_status(state["run_id"], "COMPLETED", node="summary")
         return {"output": md}

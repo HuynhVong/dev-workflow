@@ -5,6 +5,7 @@
   devflow standup --repo ~/code/api --repo ~/code/web [--since "yesterday"] [--author me@x.com] [--notes notes.md]
 
 Jira ticket implement (needs workspace.yaml, see workspace.example.yaml):
+  devflow setup                           first run: models per step, global skills to install
   devflow implement AQS-5512 [--repos api-service,web-portal] [--no-input]
   devflow address-review AQS-5512 [--repos api-service,web-portal] [--no-input]
   devflow answer <run_id> --choice approve [--note "..."] [--repos a,b] [--approve-repos x] [--fix 1,3 --answer-only 2 --skip 4]
@@ -111,6 +112,19 @@ def _add_implement_commands(sub) -> None:
     si.add_argument("--repos", help="hard allow-list of repos (comma separated)")
     common(si, run=False)
     si.set_defaults(fn=lambda a: _session(a).start(a.ticket, _csv(a.repos)) and None)
+
+    su = sub.add_parser("setup", help="first-time setup: models per step and the global Claude Code skills to install")
+    su.add_argument("--workspace", help="path to workspace.yaml (default: $DEVFLOW_WORKSPACE or ./workspace.yaml)")
+
+    def do_setup(a):
+        from .jira_implement.runner import load
+        from .routing import Routing, setup_report
+        ws = load(a.workspace)
+        report, ok = setup_report(Routing.from_config(ws.ai), {n: r.path for n, r in ws.repos.items()})
+        print(report)
+        if not ok:
+            raise SystemExit(1)
+    su.set_defaults(fn=do_setup)
 
     sv = sub.add_parser("address-review", help="fix / answer reviewer comments on the ticket's draft MRs")
     sv.add_argument("ticket")

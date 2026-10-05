@@ -13,6 +13,7 @@ import shlex
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from ..routing import Routing, skills_hint
 from .confluence import is_write_tool
 from .scope import ScopeGuard
 
@@ -23,17 +24,21 @@ EDIT_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit"}
 MCP_WRITE = re.compile(r"(create|update|edit|delete|remove|add_|_add|transition|assign|move|comment|upload|publish|merge|approve|write|post)", re.I)
 
 
-def tool_policy(tool: str, tool_input: dict, roots: list[str], read_only: bool = False) -> tuple[bool, str]:
-    """Pure policy check (unit-tested). Returns (allowed, reason)."""
-    def inside(p: str) -> bool:
+def tool_policy(tool: str, tool_input: dict, roots: list[str], read_only: bool = False,
+                read_roots: list[str] = ()) -> tuple[bool, str]:
+    """Pure policy check (unit-tested). Returns (allowed, reason). `read_roots` (the global skill folders) may be
+    read and their scripts run, never edited."""
+    def inside(p: str, among=None) -> bool:
         real = os.path.realpath(p)
-        return any(real == r or real.startswith(r + os.sep) for r in roots)
+        return any(real == r or real.startswith(r + os.sep) for r in (roots if among is None else among))
 
     if tool in FILE_TOOLS:
         path = tool_input.get(FILE_TOOLS[tool]) or roots[0]
         if not os.path.isabs(path):
             path = os.path.join(roots[0], path)
         if not inside(path):
+            if tool not in EDIT_TOOLS and inside(path, read_roots):
+                return True, ""
             return False, f"{path} is outside the repos in scope"
         if read_only and tool in EDIT_TOOLS:
             return False, "this step is read-only"
@@ -55,7 +60,7 @@ def tool_policy(tool: str, tool_input: dict, roots: list[str], read_only: bool =
                 if words[1] == "git" and (len(words) < 3 or words[2] not in READ_ONLY_GIT or (words[2] == "branch" and len(words) > 3)):
                     return False, "only read-only `rtk git` commands are allowed; the workflow commits and pushes"
             for w in words:
-                if os.path.isabs(w) and not inside(w) and not w.startswith(("/tmp", "/dev/null", "/usr", "/bin", "/opt", "/etc", "/proc")):
+                if os.path.isabs(w) and not inside(w) and not inside(w, read_roots) and not w.startswith(("/tmp", "/dev/null", "/usr", "/bin", "/opt", "/etc", "/proc")):
                     return False, f"{w} is outside the repos in scope"
         return True, ""
     if tool.startswith("mcp__"):
@@ -78,9 +83,10 @@ class CodingResult:
 
 
 class CodingAgent(Protocol):
-    def implement(self, repo: str, path: str, instructions: str) -> CodingResult: ...
-    def explore(self, repo: str, path: str, question: str) -> CodingResult: ...
-    def verify(self, repos: dict[str, str], instructions: str) -> CodingResult: ...
+    """`step` picks the model and the skills (routing.STEPS); `escalate` uses the step's stronger model."""
+    def implement(self, repo: str, path: str, instructions: str, step: str = "implement", escalate: bool = False) -> CodingResult: ...
+    def explore(self, repo: str, path: str, question: str, step: str = "discover_repos") -> CodingResult: ...
+    def verify(self, repos: dict[str, str], instructions: str, step: str = "integration_check") -> CodingResult: ...
 
 
 IMPLEMENT_SCHEMA = {
@@ -127,40 +133,44 @@ RULES = (
 
 
 class ClaudeCodeAgent:
-    def __init__(self, scope: ScopeGuard, model: str | None = None, effort: str | None = "high",
-                 mcp_servers: dict | None = None, max_turns: int = 200):
-        self.scope, self.model, self.effort, self.mcp_servers, self.max_turns = scope, model, effort, mcp_servers or {}, max_turns
+    def __init__(self, scope: ScopeGuard, routing: Routing | None = None, mcp_servers: dict | None = None, max_turns: int = 200):
+        self.scope, self.routing, self.mcp_servers, self.max_turns = scope, routing or Routing(), mcp_servers or {}, max_turns
 
-    def implement(self, repo: str, path: str, instructions: str) -> CodingResult:
-        out = self._run([path], f"{RULES}\nRepository: {repo} ({path})\n\n{instructions}", IMPLEMENT_SCHEMA, read_only=False)
+    def implement(self, repo: str, path: str, instructions: str, step: str = "implement", escalate: bool = False) -> CodingResult:
+        out = self._run([path], f"{RULES}\nRepository: {repo} ({path})\n\n{instructions}", IMPLEMENT_SCHEMA, read_only=False,
+                        step=step, escalate=escalate)
         return CodingResult(ok=bool(out.get("ok")), summary=out.get("summary", ""), files_changed=out.get("files_changed", []),
                             out_of_scope_needs=out.get("out_of_scope_needs", []), raw=json.dumps(out))
 
-    def explore(self, repo: str, path: str, question: str) -> CodingResult:
-        out = self._run([path], f"{RULES}\nThis step is READ-ONLY: do not edit files.\nRepository: {repo} ({path})\n\n{question}", EXPLORE_SCHEMA, read_only=True)
+    def explore(self, repo: str, path: str, question: str, step: str = "discover_repos") -> CodingResult:
+        out = self._run([path], f"{RULES}\nThis step is READ-ONLY: do not edit files.\nRepository: {repo} ({path})\n\n{question}", EXPLORE_SCHEMA,
+                        read_only=True, step=step)
         return CodingResult(ok=bool(out.get("confirmed")), summary=out.get("notes", ""), files_changed=out.get("relevant_files", []),
                             out_of_scope_needs=out.get("out_of_scope_needs", []), findings=out, raw=json.dumps(out))
 
-    def verify(self, repos: dict[str, str], instructions: str) -> CodingResult:
+    def verify(self, repos: dict[str, str], instructions: str, step: str = "integration_check") -> CodingResult:
         listing = "\n".join(f"- {n}: {p}" for n, p in repos.items())
-        out = self._run(list(repos.values()), f"{RULES}\nThis step verifies behaviour and must NOT edit source files.\nRepositories:\n{listing}\n\n{instructions}", VERIFY_SCHEMA, read_only=True)
+        out = self._run(list(repos.values()), f"{RULES}\nThis step verifies behaviour and must NOT edit source files.\nRepositories:\n{listing}\n\n{instructions}", VERIFY_SCHEMA, read_only=True, step=step)
         return CodingResult(ok=bool(out.get("passed")), findings=out, raw=json.dumps(out))
 
-    def _run(self, roots: list[str], prompt: str, schema: dict, read_only: bool) -> dict:
+    def _run(self, roots: list[str], prompt: str, schema: dict, read_only: bool, step: str, escalate: bool = False) -> dict:
         from claude_agent_sdk import ClaudeAgentOptions, HookMatcher, ResultMessage, query
 
         roots = [os.path.realpath(r) for r in roots]
         for r in roots:
             self.scope.require_path(r)
+        model = self.routing.model(step, escalate=escalate)
+        skill_roots = [os.path.realpath(d) for d in self.routing.registry.dirs]
+        prompt += skills_hint(self.routing.skills(step, repo_path=roots[0]))
 
         async def pre_tool_use(hook_input, tool_use_id, context):
-            allowed, reason = tool_policy(hook_input["tool_name"], hook_input.get("tool_input") or {}, roots, read_only)
+            allowed, reason = tool_policy(hook_input["tool_name"], hook_input.get("tool_input") or {}, roots, read_only, skill_roots)
             if allowed:
                 return {}
             return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}
 
         options = ClaudeAgentOptions(
-            cwd=roots[0], add_dirs=roots[1:], model=self.model, effort=self.effort, max_turns=self.max_turns,
+            cwd=roots[0], add_dirs=roots[1:], model=model, effort=self.routing.effort(model), max_turns=self.max_turns,
             permission_mode="acceptEdits", setting_sources=["user", "project"], mcp_servers=self.mcp_servers,
             hooks={"PreToolUse": [HookMatcher(matcher=None, hooks=[pre_tool_use])]},
             output_format={"type": "json_schema", "schema": schema},

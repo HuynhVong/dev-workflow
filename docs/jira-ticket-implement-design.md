@@ -205,6 +205,41 @@ RunState
 
 ---
 
+## 9. Models and skills per step
+
+Every AI step names itself, and `routing.py` turns that name into a model and a set of skills. **Every model runs at medium effort**; this is fixed and cannot be configured. Haiku 4.5 has no effort setting, so it runs at its one built-in level. Where the table offered two models, the first is the default. For coding steps, the second model is the escalation used on the last automated fix attempt. Any step's model or skills can be overridden under `ai.steps` in `workspace.yaml`.
+
+| Step | Model | Preferred global skills |
+|---|---|---|
+| `fetch_ticket` | No AI (direct Jira MCP read; deterministic and cheaper than Haiku) | — |
+| `gather_context` | Haiku | `confluence-read` |
+| `analyze_requirements` | Sonnet | `requirements-analysis` |
+| `change_impact` | Sonnet | `repo-exploration` |
+| `clarify` | Human (questions come from the two steps above) | — |
+| `discover_repos` | Haiku (Claude Code, read-only) | `repo-search` |
+| `plan_implementation` | Opus | `planning` + domain skills |
+| `approve_plan`, `manual_test`, `approve_push` | Human | — |
+| `prepare_branches`, `commit_and_push`, `open_draft_mrs`, `jira_update` | No AI | — |
+| `implement` (waves) | Sonnet; Opus on the last fix attempt (Claude Code) | coding skills matching the repo's stack |
+| `run_checks` | No AI (the repo's lint/typecheck/test/build commands) | — |
+| `analyze_feedback_and_route` | Sonnet | `debugging` + domain skills |
+| `targeted_fix` | Sonnet; Opus on the last fix attempt (Claude Code) | coding skills matching the repo's stack |
+| `integration_check` | No AI first: the repos' `integration` / `e2e` commands. Sonnet only for what they do not cover | `playwright` |
+| `repo_review` | Sonnet | `code-review`, `sonar` |
+| `contract_review` | Opus | `cross-repo-review` |
+| `summary` | Haiku | `implementation-summary` |
+| address-review: `classify_comments` / `map_to_repos` | Sonnet | `code-review` / `planning` |
+
+**Setup.** On first use, `devflow setup` lists every step with its model, its effort and its skills, marking each skill as installed or missing, plus the coding skills found for each repo's stack. You install the skills for your role globally for Claude Code (`~/.claude/skills/<name>/SKILL.md`, or through a plugin), or map steps to the skills you already have.
+
+**Skill detection at run time.** Each step looks up its skills among the global skills that are installed when it runs:
+- Its preferred skills come first, then the workspace's `domain_skills` for planning and feedback analysis.
+- Coding steps also get skills whose name or description matches the repo's stack. The stack is detected from files such as `package.json`, `pom.xml` and `go.mod`.
+- Claude Code steps (discover, implement, fix, E2E) already load the global skills. They are also told which installed skills fit the step, and they may read skill files but never edit them.
+- API steps cannot load local skills, so the matched skills' `SKILL.md` text is added to their instructions.
+
+A missing skill never blocks a run. The step runs without it, and preflight shows it as a warning.
+
 ## Companion workflow: `address-review`
 
 A separate graph, `devflow address-review AQS-5512 [--repos ...]`, run after reviewers comment. It has the same guardrails, lifecycle, checkpointing, idempotency and scope guard. It uses the existing `<KEY>` branches and never creates new ones.

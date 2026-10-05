@@ -86,6 +86,7 @@ def build_graph(llm: StructuredLLM | None = None, checkpointer=None):
             SYSTEM,
             _context(state) + "\n\nAnalyze this ticket. List only questions that genuinely block planning.",
             TicketAnalysis,
+            step="ticket_to_plan.analyze",
         )
         return {"analysis": analysis}
 
@@ -112,7 +113,7 @@ def build_graph(llm: StructuredLLM | None = None, checkpointer=None):
                 "commit each. Every acceptance criterion must be covered by the test plan. "
                 "Record anything you assumed under assumptions."
             )
-        return {"plan": get_llm().structured(SYSTEM, prompt, ImplementationPlan),
+        return {"plan": get_llm().structured(SYSTEM, prompt, ImplementationPlan, step="ticket_to_plan.plan"),
                 "revisions": state.get("revisions", 0) + (1 if state.get("critique") else 0)}
 
     def critique(state: State):
@@ -122,7 +123,7 @@ def build_graph(llm: StructuredLLM | None = None, checkpointer=None):
             + f"\n\n<plan>\n{state['plan'].model_dump_json(indent=2)}\n</plan>"
             + "\n\nReview this plan as the tech lead. Approve unless there is a concrete gap."
         )
-        return {"critique": get_llm().structured(SYSTEM, prompt, PlanCritique)}
+        return {"critique": get_llm().structured(SYSTEM, prompt, PlanCritique, step="ticket_to_plan.critique")}
 
     def route_after_critique(state: State) -> str:
         if state["critique"].approved or state.get("revisions", 0) >= MAX_REVISIONS:

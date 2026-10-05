@@ -35,6 +35,7 @@ def test_happy_path_two_repos_in_dependency_order(tmp_path):
     assert store.run("AQS-1-run")["status"] == "WAITING_HUMAN"
     out = answer(g, cfg, choice="approve")
     assert at(out) == "manual_test"  # integration not required -> straight to the mandatory manual test
+    assert llm.steps[:4] == ["gather_context", "analyze_requirements", "change_impact", "plan_implementation"]
     impl = [c[1] for c in coder.calls if c[0] == "implement"]
     assert impl == ["api", "web"]  # api (upstream) strictly before web
     web_prompt = [c[2] for c in coder.calls if c[0] == "implement" and c[1] == "web"][0]
@@ -79,6 +80,8 @@ def test_fix_budget_is_run_wide_and_pauses_at_three(tmp_path):
     out = answer(g, cfg, choice="approve")
     assert at(out) == "budget_exhausted"
     assert len([c for c in coder.calls if c[0] == "implement"]) == 4  # first implementation + 3 fix attempts
+    # Sonnet for the first implementation and fixes; the last automated attempt escalates to the stronger model
+    assert [(st, esc) for st, _, esc in coder.steps] == [("implement", False), ("targeted_fix", False), ("targeted_fix", False), ("targeted_fix", True)]
     state = g.get_state(cfg).values
     assert state["repos"]["api"]["fix_attempts_used"] == 3
     # you fix it by hand: checks re-run with no automated edit; still failing -> back to you, budget unchanged
@@ -163,3 +166,31 @@ def test_out_of_scope_repo_pauses_for_approval(tmp_path):
     assert at(out) == "approve_plan"
     st = g.get_state(cfg).values
     assert "shared" not in st["scope"] and st["scope_gaps"][0]["repo"] == "shared"
+
+
+def test_integration_runs_repo_commands_before_any_ai(tmp_path):
+    from dev_workflows.jira_implement.models import ContractCheck
+    ws, env = make_env(tmp_path, repos=("api",))
+    object.__setattr__(ws.repos["api"], "commands", {**ws.repos["api"].commands, "integration": "echo contract-tests-ok"})
+    llm = FakeLLM(["api"], [], integration=True)
+    deps, _, _ = make_deps(tmp_path, ws, env, llm, FakeCoder())
+    g, cfg, out = start(tmp_path, ws, deps)
+    out = answer(g, cfg, choice="approve")
+    assert at(out) == "manual_test"
+    report = g.get_state(cfg).values["integration_report"]
+    assert report["commands"][0]["ok"] and "contracts" not in report
+    assert ContractCheck not in [c[0] for c in llm.calls]  # the command covered it: no AI contract check
+
+
+def test_missing_global_skills_are_a_warning_not_a_blocker(tmp_path):
+    from dev_workflows.routing import Routing, SkillRegistry
+    ws, env = make_env(tmp_path, repos=("api",))
+    skills = tmp_path / "skills" / "planning"
+    skills.mkdir(parents=True)
+    (skills / "SKILL.md").write_text("---\nname: planning\ndescription: plan\n---\nPlan.")
+    deps, _, _ = make_deps(tmp_path, ws, env, FakeLLM(["api"], []), FakeCoder(), routing=Routing(registry=SkillRegistry([tmp_path / "skills"])))
+    g, cfg, out = start(tmp_path, ws, deps)
+    warnings = out["__interrupt__"][0].value["payload"]["warnings"]
+    skill_warning = next(w for w in warnings if "skills not installed" in w)
+    assert at(out) == "approve_plan"  # the run goes on; missing skills only warn
+    assert "analyze_requirements: requirements-analysis" in skill_warning and "plan_implementation" not in skill_warning

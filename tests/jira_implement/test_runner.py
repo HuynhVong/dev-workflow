@@ -6,7 +6,7 @@ from dev_workflows.jira_implement.graph import Deps
 from dev_workflows.jira_implement.jira import JiraGateway
 from dev_workflows.jira_implement.runner import Session
 
-from .harness import FakeCoder, FakeLLM, FakeMcp, glab_db, make_env
+from .harness import FakeCoder, FakeLLM, FakeMcp, glab_db, make_env, no_skills
 
 
 def session(tmp_path, ws, env, llm, coder, which=None):
@@ -17,7 +17,7 @@ def session(tmp_path, ws, env, llm, coder, which=None):
                     confluence=ConfluenceReader(mcp, ws_.confluence_tools), coder_factory=lambda s: coder,
                     vcs_runner=lambda cmd, cwd: subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env),
                     cmd_runner=lambda cmd, cwd: subprocess.run(cmd, shell=True, cwd=cwd, capture_output=True, text=True, env=env),
-                    which=which or (lambda n: f"/usr/bin/{n}"))
+                    which=which or (lambda n: f"/usr/bin/{n}"), routing=no_skills())
     out = io.StringIO()
     return Session(ws, deps_factory=factory, ask=None, out=out), out, mcp
 

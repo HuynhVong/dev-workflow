@@ -58,3 +58,13 @@ review_status: Code Review
 vcs_prefix: rtk                     # every git/glab call is `rtk git ...` / `rtk glab ...`
 state_dir: .devflow                 # SQLite checkpoints, audit log and side-effect ledger
 max_fix_attempts: 3                 # automated fix attempts per repo for a whole run, never reset
+
+# Models and global Claude Code skills per step (defaults in src/dev_workflows/routing.py; run `devflow setup`).
+# Effort is always medium and cannot be changed here.
+ai:
+  # models: {haiku: claude-haiku-4-5-20251001, sonnet: claude-sonnet-5-5, opus: claude-opus-5-5}
+  domain_skills: []                 # e.g. [insurance-domain]; added to planning and feedback analysis
+  steps:                            # override any step: model (haiku/sonnet/opus or a model id) and/or skills
+    # gather_context: {model: sonnet}
+    # repo_review: {skills: [code-review, sonar]}
+  # skill_dirs: [~/.claude/skills, ~/.claude/plugins]

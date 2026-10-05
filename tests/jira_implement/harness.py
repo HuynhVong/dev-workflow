@@ -14,6 +14,7 @@ from dev_workflows.jira_implement.ledger import Store
 from dev_workflows.jira_implement.models import (Analysis, ContractCheck, ContractReview, DagEdge, FeedbackAnalysis, Impact,
                                                  Outdated, Plan, RepoTasks, RequirementContext, Risk, TestPlanItem)
 from dev_workflows.jira_implement.workspace import load_workspace
+from dev_workflows.routing import Routing, SkillRegistry
 from dev_workflows.workflows.pr_review import LensReview, Triage, Verdict
 
 FAKE_GLAB = r'''#!/usr/bin/env python3
@@ -114,21 +115,22 @@ class FakeMcp:
 
 class FakeCoder:
     def __init__(self, fail_repos=(), needs=None):
-        self.calls = []
+        self.calls, self.steps = [], []
         self.fail_repos = set(fail_repos)
         self.needs = needs or {}
 
-    def implement(self, repo, path, instructions):
+    def implement(self, repo, path, instructions, step="implement", escalate=False):
         self.calls.append(("implement", repo, instructions))
+        self.steps.append((step, repo, escalate))
         Path(path, "feature.txt").write_text(Path(path, "feature.txt").read_text() + "x\n" if Path(path, "feature.txt").exists() else "x\n")
         return CodingResult(ok=True, summary=f"implemented {repo}", files_changed=["feature.txt"],
                             out_of_scope_needs=self.needs.pop(repo, []))
 
-    def explore(self, repo, path, question):
+    def explore(self, repo, path, question, step="discover_repos"):
         self.calls.append(("explore", repo, question))
         return CodingResult(ok=True, summary="relevant", files_changed=["src/x"], findings={})
 
-    def verify(self, repos, instructions):
+    def verify(self, repos, instructions, step="integration_check"):
         self.calls.append(("verify", tuple(repos), instructions))
         return CodingResult(ok=True, findings={"passed": True, "results": []})
 
@@ -137,7 +139,7 @@ class FakeLLM:
     """Answers by schema; `overrides` maps schema -> list of answers (consumed in order, last one repeats)."""
 
     def __init__(self, repos, edges, integration=False, e2e=False, overrides=None, out_of_scope=None):
-        self.calls = []
+        self.calls, self.steps = [], []
         self.answers = {
             RequirementContext: [RequirementContext(requirement=[], current_business=[], conflicts=[], pages=[])],
             Analysis: [Analysis(summary="Export orders", kind="feature", acceptance_criteria=["CSV respects filters"], questions=[])],
@@ -159,8 +161,9 @@ class FakeLLM:
         for k, v in (overrides or {}).items():
             self.answers[k] = list(v)
 
-    def structured(self, system, prompt, schema, images=()):
+    def structured(self, system, prompt, schema, images=(), step=""):
         self.calls.append((schema, prompt))
+        self.steps.append(step)
         q = self.answers[schema]
         return q.pop(0) if len(q) > 1 else q[0]
 
@@ -192,7 +195,11 @@ def make_env(tmp_path: Path, repos=("api", "web"), checks=None, extra_repos=()):
     return load_workspace(tmp_path / "workspace.yaml"), env
 
 
-def make_deps(tmp_path, ws, env, llm, coder, mcp=None):
+def no_skills():
+    return Routing(registry=SkillRegistry([]))
+
+
+def make_deps(tmp_path, ws, env, llm, coder, mcp=None, routing=None):
     mcp = mcp or FakeMcp(list(ws.jira_tools.values()) + list(ws.confluence_tools.values()))
     store = Store(str(tmp_path / "runs.sqlite"))
 
@@ -204,7 +211,7 @@ def make_deps(tmp_path, ws, env, llm, coder, mcp=None):
 
     deps = Deps(workspace=ws, store=store, llm=llm, jira=JiraGateway(mcp, ws.jira_tools, ws.status_order),
                 confluence=ConfluenceReader(mcp, ws.confluence_tools), coder_factory=lambda scope: coder,
-                vcs_runner=runner, cmd_runner=cmd_runner, which=lambda name: f"/usr/bin/{name}")
+                vcs_runner=runner, cmd_runner=cmd_runner, which=lambda name: f"/usr/bin/{name}", routing=routing or no_skills())
     return deps, store, mcp
 
 

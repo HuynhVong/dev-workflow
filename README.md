@@ -14,7 +14,8 @@ A full-stack developer's day-to-day team workflows, each as a small LangGraph gr
 
 ```
 src/dev_workflows/
-  config.py            model + effort (env: DEVFLOW_MODEL, DEVFLOW_EFFORT)
+  config.py            max tokens; effort is fixed at medium for every model
+  routing.py           model per step (Haiku / Sonnet / Opus) and the global Claude Code skills each step uses
   llm.py               one Claude call helper (structured output via Pydantic); swap-able for tests
   cli.py               `devflow plan | review | standup | implement | address-review | answer | resume | ...`
   workflows/           one file per graph, each exposes build_graph() and `graph`
@@ -53,6 +54,11 @@ langgraph dev          # visual graph + step-through in LangGraph Studio
 
 ## Jira ticket implement and address-review
 
+First run `devflow setup`: it shows the model and effort of every step and which global Claude Code skills
+(`~/.claude/skills/<name>/SKILL.md`, or skills from installed plugins) are installed or still missing. Install the
+skills for your role, or point steps at the skills you already have under `ai.steps` in `workspace.yaml`. A missing
+skill never stops a run; the step runs without it and preflight lists it as a warning.
+
 Prerequisites on your machine: Jira MCP (read + write), Confluence MCP (read is enough; it is never written to),
 Playwright MCP for UI repos, `git` and `glab` installed and authenticated, `rtk` installed (every git/glab call goes
 through it), the Claude Code CLI with your coding skills, and `ANTHROPIC_API_KEY`. Copy `workspace.example.yaml` to
@@ -83,4 +89,4 @@ per run in total; after that the run waits for you.
 3. Register it in `langgraph.json` and add a subcommand in `cli.py`.
 4. Add a test using `tests/fake_llm.py`.
 
-Default model is `claude-opus-5-5` at `medium` effort, with server-side refusal fallback enabled.
+Every AI step picks its own model (see `routing.py` and the table in `docs/jira-ticket-implement-design.md`); every model runs at `medium` effort, with server-side refusal fallback enabled.

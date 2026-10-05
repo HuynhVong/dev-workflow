@@ -83,7 +83,7 @@ def build_graph(llm: StructuredLLM | None = None, checkpointer=None):
 
     def triage(state: State):
         t = get_llm().structured(
-            SYSTEM, _pr(state["title"], state.get("description", ""), state["diff"]) + "\n\nTriage this PR.", Triage
+            SYSTEM, _pr(state["title"], state.get("description", ""), state["diff"]) + "\n\nTriage this PR.", Triage, step="pr_review.triage"
         )
         lenses = set(t.lenses) | {"correctness", "tests"}
         if t.touches_frontend:
@@ -104,7 +104,7 @@ def build_graph(llm: StructuredLLM | None = None, checkpointer=None):
             _pr(task["title"], task["description"], task["diff"])
             + f"\n\nReview ONLY through the {task['lens']} lens: {LENS_GUIDE[task['lens']]}."
         )
-        return {"findings": get_llm().structured(SYSTEM, prompt, LensReview).findings}
+        return {"findings": get_llm().structured(SYSTEM, prompt, LensReview, step="pr_review.lens").findings}
 
     def verdict(state: State):
         findings = sorted(state["findings"], key=lambda f: SEVERITY_ORDER[f.severity])
@@ -115,6 +115,7 @@ def build_graph(llm: StructuredLLM | None = None, checkpointer=None):
             "Merge duplicate findings in your summary and decide: request_changes if any blocker or "
             "major remains, comment for minor-only, approve otherwise.",
             Verdict,
+            step="pr_review.verdict",
         )
         return {"verdict": v}
 
