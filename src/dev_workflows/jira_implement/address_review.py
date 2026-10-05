@@ -15,8 +15,8 @@ from typing_extensions import TypedDict
 from ..llm import AsStep
 from . import dag as dagmod
 from . import worktrees
-from .graph import (SYSTEM, TRANSIENT, Deps, GraphKit, _j, _tail, check_environment, merge_repos, route_feedback,
-                    run_repo_checks)
+from .graph import (CHECKPOINT_TITLES, HIDDEN_NODES, SYSTEM, TICKET_FORM, TRANSIENT, Deps, GraphKit, _j, _tail,
+                    check_environment, merge_repos, route_feedback, run_repo_checks)
 from .jira import marker
 from .ledger import Effect, perform
 from .scope import ScopeGuard
@@ -27,6 +27,24 @@ WORKFLOW = "address_review"
 REVIEW_STEPS = ("classify_comments", "map_to_repos", "targeted_fix", "integration_check", "repo_review", "contract_review",
                 "analyze_feedback_and_route")
 REPLY_MARK = "<!-- devflow:{run_id}:{thread} -->"
+
+
+DEVFLOW_UI = {
+    "title": "Address review",
+    "description": "Reads unresolved threads on the ticket's draft MRs, lets you triage them, fixes and re-tests, then replies.",
+    "icon": "message-square", "color": "#b78cff", "form": TICKET_FORM, "checkpoints": CHECKPOINT_TITLES, "hidden_nodes": HIDDEN_NODES,
+    "steps": ["preflight", "prepare_worktrees", "load_mrs", "read_discussions", "classify_comments", "triage", "map_to_repos",
+              "sync_branches", "fix_repo", "integration_check", "manual_retest", "repo_review", "contract_review", "approve_push",
+              "push_updates", "reply_to_discussions", "jira_refresh", "summary"],
+    "nodes": {"preflight": "Preflight", "prepare_worktrees": "Prepare worktrees", "load_mrs": "Load draft MRs",
+              "read_discussions": "Read review threads", "classify_comments": "Classify comments", "triage": "Triage",
+              "map_to_repos": "Map fixes to repos", "sync_branches": "Sync branches", "sync_blocked": "Sync blocked",
+              "fix_repo": "Fix", "budget_exhausted": "Fix budget used", "integration_check": "Integration check",
+              "manual_retest": "Manual re-test", "repo_review": "Repo review", "contract_review": "Contract review",
+              "analyze_feedback_and_route": "Route feedback", "route_ask": "Feedback decision", "approve_push": "Approve push",
+              "push_updates": "Push updates", "push_blocked": "Push blocked", "reply_to_discussions": "Reply in threads",
+              "jira_refresh": "Update Jira comment", "summary": "Summary", "nothing_to_do": "Nothing to do", "abort": "Aborted"},
+}
 
 
 class ReviewState(TypedDict, total=False):
@@ -127,7 +145,7 @@ def build_review_graph(deps: Deps, checkpointer=None):
     # 3 -------------------------------------------------------------------------------------------
     def classify_comments(state):
         vcs = deps.vcs(state)
-        diffs = {r: _tail(vcs.diff_against(r, ws.repo(r).base_branch), 40000) for r in state["mrs"]}
+        diffs = {r: _tail(vcs.diff_against(r, f"origin/{ws.repo(r).base_branch}"), 40000) for r in state["mrs"]}
         tr = llm.structured(SYSTEM, (
             f"Ticket {state['ticket_key']}. Unresolved review threads on its draft MRs:\n<threads>{_j(state['threads'])}</threads>\n"
             f"<mr_diffs>{_j(diffs)}</mr_diffs>\n<repos_in_scope>{list(state['scope'])}</repos_in_scope>\n\n"

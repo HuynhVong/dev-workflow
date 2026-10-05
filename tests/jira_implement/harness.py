@@ -18,8 +18,9 @@ from dev_workflows.routing import Routing, SkillRegistry
 from dev_workflows.workflows.pr_review import LensReview, Triage, Verdict
 
 FAKE_GLAB = r'''#!/usr/bin/env python3
-import json, os, sys
+import fcntl, json, os, sys
 db = os.environ["FAKE_GLAB_DB"]
+_lock = open(db + ".lock", "w"); fcntl.flock(_lock, fcntl.LOCK_EX)  # parallel runs share this fake GitLab
 data = json.load(open(db)) if os.path.exists(db) else {}
 repo = os.path.basename(os.getcwd())
 a = sys.argv[1:]

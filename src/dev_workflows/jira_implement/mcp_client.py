@@ -13,6 +13,14 @@ class McpTools(Protocol):
     def call(self, tool: str, args: dict[str, Any]) -> Any: ...
 
 
+def _http_transport(url: str, headers: dict | None):
+    """Streamable HTTP for both mcp 1.x (`streamablehttp_client(url, headers=)`) and 2.x (`streamable_http_client`)."""
+    from mcp.client import streamable_http as sh
+    if hasattr(sh, "streamablehttp_client"):
+        return sh.streamablehttp_client(url, headers=headers)
+    return sh.streamable_http_client(url, http_client=sh.create_mcp_http_client(headers=headers))
+
+
 class StdioOrHttpMcp:
     """config: {"command": "...", "args": [...], "env": {...}} for stdio, or {"url": "..."} for streamable HTTP."""
 
@@ -22,11 +30,10 @@ class StdioOrHttpMcp:
     async def _with_session(self, fn):
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
-        from mcp.client.streamable_http import streamablehttp_client
 
         if "url" in self.config:
-            async with streamablehttp_client(self.config["url"], headers=self.config.get("headers")) as (r, w, _):
-                async with ClientSession(r, w) as s:
+            async with _http_transport(self.config["url"], self.config.get("headers")) as streams:
+                async with ClientSession(streams[0], streams[1]) as s:
                     await s.initialize()
                     return await fn(s)
         params = StdioServerParameters(command=self.config["command"], args=self.config.get("args", []), env=self.config.get("env"))
@@ -44,7 +51,7 @@ class StdioOrHttpMcp:
         async def go(s):
             res = await s.call_tool(tool, args)
             texts = [c.text for c in res.content if getattr(c, "type", "") == "text"]
-            if res.isError:
+            if getattr(res, "is_error", None) or getattr(res, "isError", None):
                 raise RuntimeError(f"{self.name}.{tool} failed: {' '.join(texts)[:500]}")
             joined = "\n".join(texts)
             try:

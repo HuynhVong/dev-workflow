@@ -49,6 +49,26 @@ class PlanCritique(BaseModel):
     issues: list[str] = Field(description="Concrete gaps: missing steps, untested criteria, risky ordering.")
 
 
+def _prepare(values: dict, workspace=None) -> tuple[str, dict]:
+    ticket = values.get("ticket", "")
+    label = next((l.strip("# ").strip() for l in ticket.splitlines() if l.strip()), "Ticket")[:80]
+    return label, {"ticket": ticket, "repo_context": values.get("repo_context", ""), "interactive": True}
+
+
+DEVFLOW_UI = {
+    "title": "Ticket to plan",
+    "description": "Analyzes a ticket, asks you blocking questions, drafts a plan and has it critiqued.",
+    "icon": "clipboard-list", "color": "#42cb80",
+    "steps": ["analyze", "clarify", "draft_plan", "critique", "render"],
+    "nodes": {"analyze": "Analyze ticket", "clarify": "Your answers", "draft_plan": "Draft plan", "critique": "Tech-lead critique",
+              "render": "Write plan"},
+    "checkpoints": {"clarify": "Answer open questions"},
+    "form": [{"name": "ticket", "label": "Ticket", "type": "textarea", "required": True, "placeholder": "Paste the ticket text"},
+             {"name": "repo_context", "label": "Context (optional)", "type": "textarea", "placeholder": "Notes about the repo or stack"}],
+    "prepare": _prepare,
+}
+
+
 class State(TypedDict):
     ticket: str
     repo_context: NotRequired[str]

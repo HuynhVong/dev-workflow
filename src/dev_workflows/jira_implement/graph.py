@@ -46,6 +46,51 @@ SYSTEM = (
 )
 
 
+TICKET_FORM = [
+    {"name": "ticket", "label": "Jira ticket", "type": "ticket", "required": True, "placeholder": "AQS-5512"},
+    {"name": "repos", "label": "Repos", "type": "repos", "help": "Hard allow-list. Empty means every repo in workspace.yaml."},
+]
+CHECKPOINT_TITLES = {
+    "clarify": "Answer open questions", "approve_plan": "Approve the plan", "branch_ownership": "Reuse existing branches",
+    "scope_request": "Approve a repo outside scope", "budget_exhausted": "Fix attempts used up", "manual_test": "Manual test",
+    "route_ask": "Decide on feedback", "approve_push": "Approve push", "push_blocked": "Push blocked",
+    "triage": "Triage review threads", "manual_retest": "Manual re-test", "sync_blocked": "Branch sync blocked",
+}
+HIDDEN_NODES = ["schedule", "apply_clarify", "apply_scope", "apply_route_ask", "apply_triage", "manual_ok", "manual_feedback",
+                "mark_hand_fixed", "approve_branch_reuse", "plan_revise"]
+DEVFLOW_UI = {
+    "title": "Jira ticket implement",
+    "description": "One Jira key to draft GitLab MRs across several repos, with your plan approval, manual test and push approval.",
+    "icon": "git-pull-request", "color": "#3491ff", "form": TICKET_FORM, "checkpoints": CHECKPOINT_TITLES, "hidden_nodes": HIDDEN_NODES,
+    "steps": ["preflight", "prepare_worktrees", "fetch_ticket", "gather_context", "analyze_requirements", "change_impact",
+              "discover_repos", "plan_implementation", "approve_plan", "prepare_branches", "implement_repo", "integration_check",
+              "manual_test", "repo_review", "contract_review", "approve_push", "commit_and_push", "open_draft_mrs", "jira_update",
+              "summary"],
+    "nodes": {
+        "preflight": "Preflight", "prepare_worktrees": "Prepare worktrees", "fetch_ticket": "Fetch ticket",
+        "gather_context": "Gather context", "analyze_requirements": "Analyze requirements", "change_impact": "Change impact",
+        "clarify": "Clarify", "discover_repos": "Discover repos", "plan_implementation": "Plan implementation",
+        "approve_plan": "Approve plan", "prepare_branches": "Prepare branches", "branch_ownership": "Branch ownership",
+        "implement_repo": "Implement", "budget_exhausted": "Fix budget used", "scope_request": "Scope request",
+        "integration_check": "Integration check", "manual_test": "Manual test", "repo_review": "Repo review",
+        "contract_review": "Contract review", "analyze_feedback_and_route": "Route feedback", "route_ask": "Feedback decision",
+        "approve_push": "Approve push", "commit_and_push": "Commit and push", "push_blocked": "Push blocked",
+        "open_draft_mrs": "Open draft MRs", "jira_update": "Update Jira", "summary": "Summary", "abort": "Aborted",
+    },
+    "node_details": {
+        "preflight": "Tools, MCP servers, repos and worktrees checked", "prepare_worktrees": "One worktree per repo for this ticket",
+        "fetch_ticket": "Ticket, attachments and links from Jira", "gather_context": "Jira, Confluence (read only) and open MRs",
+        "analyze_requirements": "Acceptance criteria and open questions", "change_impact": "Layers, repos, contracts and risk",
+        "discover_repos": "Relevant code in each candidate repo", "plan_implementation": "Tasks per repo and the dependency DAG",
+        "approve_plan": "Your decision", "prepare_branches": "Branch from a freshly fetched develop",
+        "implement_repo": "Claude Code edits each repo, wave by wave", "integration_check": "Integration and E2E checks",
+        "manual_test": "You test it locally", "repo_review": "Review of each repo's diff", "contract_review": "Cross-repo review",
+        "approve_push": "Your decision", "commit_and_push": "Commit and push (never forced)", "open_draft_mrs": "Draft MRs to develop",
+        "jira_update": "Code Review status and one delivery comment", "summary": "Final summary",
+    },
+}
+
+
 class PreflightFailed(RuntimeError):
     def __init__(self, gaps: list[str]):
         self.gaps = gaps
@@ -248,42 +293,14 @@ def check_environment(deps: "Deps", state: dict, need_confluence: bool, steps: t
         gaps.append(f"--repos names not in workspace.yaml: {unknown}")
     repos = {r: ws.repos[r].path for r in requested if r in ws.repos}
     scope = ScopeGuard.create({r: ws.worktree(state["ticket_key"], r) for r in repos})
-    prefix = ws.vcs_prefix.split()[0] if ws.vcs_prefix else ""
-    if prefix and not deps.which(prefix):
-        gaps.append(f"'{prefix}' is not installed (every git/glab call goes through it)")
-    if not deps.which("claude"):
-        gaps.append("Claude Code CLI ('claude') is not installed")
-    if any(ws.repos[r].has_ui for r in repos) and not any("playwright" in k.lower() for k in ws.mcp_servers):
-        gaps.append("a UI repo is in scope but no Playwright MCP server is configured")
-    try:
-        missing = deps.jira.missing_tools()
-        if missing:
-            gaps.append(f"Jira MCP is missing tools {missing} (read + write needed)")
-    except Exception as e:  # noqa: BLE001
-        gaps.append(f"Jira MCP unreachable: {e}")
-    if need_confluence:
-        try:
-            missing = deps.confluence.missing_tools()
-            if missing:
-                gaps.append(f"Confluence MCP is missing read tools {missing}")
-        except Exception as e:  # noqa: BLE001
-            gaps.append(f"Confluence MCP unreachable: {e}")
+    from .. import doctor
+    blocking = lambda checks: [c.detail for c in checks if c.status == "fail" and c.blocking]  # noqa: E731
+    gaps += blocking(doctor.tool_checks(ws, deps.which, list(repos)))
+    gaps += blocking(doctor.mcp_checks(ws, deps.jira, deps.confluence, need_confluence))
     if repos and not gaps:
         vcs = deps.source_vcs(repos)
-        first = next(iter(repos))
-        for args in (("git", "--version"), ("glab", "auth", "status")):
-            r = vcs.run(first, *args, check=False)
-            if r.returncode != 0:
-                gaps.append(f"`{ws.vcs_prefix} {' '.join(args)}` failed: {(r.stderr or r.stdout).strip()[:200]}")
-        ok_repos = []
-        for name, path in repos.items():
-            if not Path(path, ".git").exists():
-                gaps.append(f"{name}: {path} is not a git repository")
-                continue
-            if vcs.run(name, "git", "ls-remote", "--heads", "origin", check=False).returncode != 0:
-                gaps.append(f"{name}: cannot reach origin")
-                continue
-            ok_repos.append(name)
+        checks, ok_repos = doctor.vcs_checks(ws, vcs, list(repos))
+        gaps += blocking(checks)
         gaps += worktrees.gaps(vcs, ws, state["ticket_key"], ok_repos)
     if not gaps:
         try:
@@ -670,7 +687,7 @@ def build_graph(deps: Deps, checkpointer=None):
                         rs["status"] = "blocked_budget"
                         break
                     rs["fix_attempts_used"] = rs.get("fix_attempts_used", 0) + 1
-                upstream = {u: _tail(vcs.diff_against(u, ws.repo(u).base_branch), 15000) for u in payload["upstream"]}
+                upstream = {u: _tail(vcs.diff_against(u, f"origin/{ws.repo(u).base_branch}"), 15000) for u in payload["upstream"]}
                 instructions = _implement_prompt(payload, repo, rs, feedback, upstream)
                 res = coder.implement(repo, path, instructions, step="targeted_fix" if rs.get("fix_attempts_used") else "implement",
                                       escalate=rs.get("fix_attempts_used", 0) >= cap)  # the last attempt gets the stronger model
@@ -773,7 +790,7 @@ def build_graph(deps: Deps, checkpointer=None):
         has = lambda kind: any(ws.repo(r).commands.get(kind) for r in nodes)  # noqa: E731
         if not feedback and imp["integration_required"] and not has("integration"):
             vcs = deps.vcs(state)
-            diffs = {r: _tail(vcs.diff_against(r, ws.repo(r).base_branch), 30000) for r in nodes}
+            diffs = {r: _tail(vcs.diff_against(r, f"origin/{ws.repo(r).base_branch}"), 30000) for r in nodes}
             cc = llm.structured(SYSTEM, f"<contracts>{_j(state['plan']['contracts'])}</contracts>\n<diffs>{_j(diffs)}</diffs>\n\n"
                                 "Check that every repo implements the fixed contracts consistently (producer and consumer agree on "
                                 "routes, fields, types, events, migrations).", ContractCheck, step="integration_check")
@@ -827,7 +844,7 @@ def build_graph(deps: Deps, checkpointer=None):
         reviewer = pr_review.build_graph(AsStep(llm, "repo_review"))
         reviews, feedback = {}, []
         for repo in state["dag"]["nodes"]:
-            diff = vcs.diff_against(repo, ws.repo(repo).base_branch)
+            diff = vcs.diff_against(repo, f"origin/{ws.repo(repo).base_branch}")
             out = reviewer.invoke({"title": f"{state['ticket_key']} ({repo})", "description": _j(state["repos"][repo].get("tasks", [])),
                                    "diff": _tail(diff, 60000), "findings": []})
             reviews[repo] = {"decision": out["verdict"].decision, "summary": out["verdict"].summary,
@@ -840,7 +857,7 @@ def build_graph(deps: Deps, checkpointer=None):
 
     def contract_review(state):
         vcs = deps.vcs(state)
-        diffs = {r: _tail(vcs.diff_against(r, ws.repo(r).base_branch), 30000) for r in state["dag"]["nodes"]}
+        diffs = {r: _tail(vcs.diff_against(r, f"origin/{ws.repo(r).base_branch}"), 30000) for r in state["dag"]["nodes"]}
         cr = llm.structured(SYSTEM, (
             f"<plan>{_j(state['plan'])}</plan>\n<merge_order>{state['dag']['merge_order']}</merge_order>\n"
             f"<acceptance_criteria>{_j(state['analysis']['acceptance_criteria'])}</acceptance_criteria>\n<diffs>{_j(diffs)}</diffs>\n\n"

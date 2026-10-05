@@ -117,7 +117,7 @@ def test_confluence_reader_rejects_write_tool_in_allow_list():
 
 def test_confluence_reader_exposes_no_write_method():
     public = {m for m in dir(ConfluenceReader) if not m.startswith("_")}
-    assert public <= {"get_page", "get_children", "search", "missing_tools", "allowed_tools"}
+    assert public <= {"get_page", "get_children", "search", "missing_tools", "tool_report", "allowed_tools"}
 
 
 @pytest.mark.parametrize("tool,inp,ok", [

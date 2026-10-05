@@ -50,6 +50,21 @@ class Verdict(BaseModel):
     summary: str = Field(description="Short review summary to post on the PR.")
 
 
+DEVFLOW_UI = {
+    "title": "PR review",
+    "description": "Triages a diff, reviews it through several lenses in parallel and merges one verdict.",
+    "icon": "search-code", "color": "#eeb747",
+    "steps": ["triage", "review", "verdict", "render"],
+    "nodes": {"triage": "Triage", "review": "Lens reviews", "verdict": "Verdict", "render": "Write review"},
+    "form": [{"name": "title", "label": "Title", "type": "text", "required": True},
+             {"name": "description", "label": "Description (optional)", "type": "textarea"},
+             {"name": "diff", "label": "Diff", "type": "textarea", "required": True, "mono": True,
+              "placeholder": "Paste the output of git diff develop...HEAD"}],
+    "prepare": lambda v, ws=None: (v.get("title", "PR review")[:80], {"title": v.get("title", ""), "description": v.get("description", ""),
+                                                                        "diff": v.get("diff", ""), "findings": []}),
+}
+
+
 class State(TypedDict):
     title: str
     diff: str

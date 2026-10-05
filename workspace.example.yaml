@@ -76,3 +76,16 @@ ai:
     # gather_context: {model: sonnet}
     # repo_review: {skills: [code-review, sonar]}
   # skill_dirs: [~/.claude/skills, ~/.claude/plugins]
+
+# Cost estimates on the Tokens tab, in USD per million tokens. Claude Code sessions report their own cost; these
+# price the direct API calls. A key matches a model id exactly or as a prefix. Edit freely and check them against
+# current Anthropic pricing; a model with no entry shows tokens but no cost.
+prices:
+  claude-opus-5-5:   {input: 4, output: 20, cache_write: 5, cache_read: 0.20}
+  claude-sonnet-5-5: {input: 2, output: 10, cache_write: 2.5, cache_read: 0.20}
+  claude-haiku-4-5:  {input: 1, output: 5, cache_write: 1.25, cache_read: 0.10}
+
+# `devflow ui` (a local web app; see README).
+ui:
+  port: 8765
+  graph_sources: []                 # extra folders or langgraph.json files whose graphs the UI should list
