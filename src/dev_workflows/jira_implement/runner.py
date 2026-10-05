@@ -42,7 +42,8 @@ class MissingMcp:
         self.name = name
 
     def list_tools(self):
-        raise RuntimeError(f"MCP server '{self.name}' is not configured under mcp_servers in workspace.yaml")
+        raise RuntimeError(f"MCP server '{self.name}' is not configured under mcp_servers in workspace.yaml "
+                           "(nor, for Jira, connected to Claude Code)")
 
     call = lambda self, tool, args: self.list_tools()  # noqa: E731
 
@@ -52,7 +53,9 @@ def _mcp(ws: Workspace, name: str):
 
 
 def real_deps(ws: Workspace, store: Store) -> Deps:
-    jira_mcp = _mcp(ws, ws.jira_server)
+    from .mcp_config import resolve_jira_server
+    found = resolve_jira_server(ws)  # workspace.yaml, else the Jira MCP connected to Claude Code
+    jira_mcp = StdioOrHttpMcp(found[0], found[1]) if found else MissingMcp(ws.jira_server)
     conf_mcp = jira_mcp if ws.confluence_server == ws.jira_server else _mcp(ws, ws.confluence_server)
     routing = Routing.from_config(ws.ai)
     return Deps(workspace=ws, store=store, llm=ClaudeLLM(routing=routing), routing=routing,
@@ -118,13 +121,15 @@ class Session:
             if not TICKET_KEY.match(ticket):
                 raise ValueError(f"'{ticket}' is not a Jira key like AQS-5512")
             repos = [r for r in (values.get("repos") or []) if r]
+            extra = spec.ui["inputs"](values, self.ws) if callable(spec.ui.get("inputs")) else {}
             busy = self.store.active_runs(ticket)
             if busy:  # one active run per ticket: they would share the ticket's worktrees
                 b = busy[0]
                 raise RunConflict(f"{ticket} already has an unfinished run {b['run_id']} ({b['status']}). Finish, resume or abort "
                                   f"it first (`devflow resume {b['run_id']}` / `devflow abort {b['run_id']}`).")
-            run_id = f"{ticket}-{'review-' if workflow == REVIEW_WORKFLOW else ''}{stamp}"
-            inputs = {"run_id": run_id, "ticket_key": ticket, "requested_repos": repos}
+            kind = "review" if workflow == REVIEW_WORKFLOW else spec.ui.get("run_prefix", "")
+            run_id = f"{ticket}-{kind + '-' if kind else ''}{stamp}"
+            inputs = {"run_id": run_id, "ticket_key": ticket, "requested_repos": repos, **extra}
             self.store.create_run(run_id, workflow, ticket, label=ticket, inputs=inputs)
         else:
             prepare = spec.ui.get("prepare")
@@ -369,6 +374,18 @@ def interactive_ask(pc: dict) -> dict:
             ans[key] = _list(input(f"Thread numbers to {key} (comma list, blank = keep the proposal): "))
     if (name == "route_ask" and c == "fix") or (name in ("manual_test", "manual_retest") and c == "feedback"):
         ans["repos"] = _list(input("Which repos? (comma list, blank = let the workflow decide): "))
+    if name == "checkout_gate" and c == "ready":
+        url = input(f"App URL (blank = {pc['payload'].get('app_url') or 'none'}): ").strip()
+        if url:
+            ans["app_url"] = url
+    if name == "approve_test_plan" and c == "approve":
+        ans["run"] = _list(input("Case ids to run (comma list, blank = all): "))
+    if name == "review_results" and c == "retest":
+        ans["retest"] = _list(input("Case ids to re-test (comma list, blank = the failed and skipped ones): "))
+    if name == "approve_comment" and c == "edit":
+        path = input("Path to a file with your edited comment: ").strip()
+        if path:
+            ans["comment"] = Path(path).expanduser().read_text()
     return ans
 
 

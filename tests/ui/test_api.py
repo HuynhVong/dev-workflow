@@ -1,5 +1,6 @@
 import json
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -109,7 +110,9 @@ def test_local_security(env):
 def test_workflows_are_discovered_with_graphs_and_forms(env):
     data = env.client.get("/api/workflows").json()
     by_id = {w["id"]: w for w in data["workflows"]}
-    assert {"jira_ticket_implement", "address_review", "ticket_to_plan", "pr_review", "standup", "test_only_graph"} <= set(by_id)
+    assert {"jira_ticket_implement", "address_review", "ticket_review", "ticket_to_plan", "standup", "test_only_graph"} <= set(by_id)
+    assert "pr_review" not in by_id  # now only the code review engine inside the ticket workflows
+    assert [f["name"] for f in by_id["ticket_review"]["form"]] == ["ticket", "commits", "app_url"]
     t = by_id["test_only_graph"]
     assert t["generated_form"] and [f["name"] for f in t["form"]] == ["topic", "reply", "answer", "output"]
     assert {"source": "think", "target": "ask", "conditional": False} in t["graph"]["edges"]
@@ -164,6 +167,20 @@ def test_ticket_run_end_to_end_through_the_api(env):
     assert set(r["mrs"]) == {"api", "web"} and [d["checkpoint"] for d in r["decisions"]] == ["approve_plan", "manual_test", "approve_push"]
     audit = c.get(f"/api/runs/{run_id}/audit").json()
     assert any(e["action"] == "create_mr" for e in audit["side_effects"])
+
+
+def test_ticket_review_run_through_the_api_and_its_files(env):
+    c = env.client
+    r = c.post("/api/runs", json={"workflow": "ticket_review", "values": {"ticket": "aqs-1", "commits": ["web=abc1234"]}})
+    run_id = r.json()["run_id"]
+    assert run_id.startswith("AQS-1-qa-")
+    run = wait_status(c, run_id, "FAILED")  # this workspace has no Playwright MCP, so preflight stops it
+    assert "Playwright MCP" in run["detail"]
+    folder = Path(env.ws.state_dir, run_id, "evidence")
+    folder.mkdir(parents=True)
+    (folder / "TC1-1.png").write_bytes(b"png")
+    assert c.get(f"/api/runs/{run_id}/file", params={"path": "evidence/TC1-1.png"}).content == b"png"
+    assert c.get(f"/api/runs/{run_id}/file", params={"path": "../../workspace.yaml"}).status_code == 404
 
 
 def test_abort_a_waiting_run(env):

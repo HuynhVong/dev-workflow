@@ -1,4 +1,5 @@
-"""Jira through MCP: read the ticket, and the two idempotent writes the workflow is allowed (status, one comment)."""
+"""Jira through MCP: read the ticket, and the idempotent writes the workflows are allowed (status, one comment per run
+and step, and the ticket review's proof screenshots as attachments)."""
 import json
 import re
 from pathlib import Path
@@ -14,13 +15,60 @@ def marker(run_id: str, step: str) -> str:
     return f"[devflow:{run_id}:{step}]"
 
 
+OPTIONAL_TOOLS = ("attach",)  # never required by `missing_tools`
+READ_TOOLS = ("get_issue", "download_attachments")
+COMMENT_TOOLS = ("add_comment", "edit_comment")
+PERMISSION_RE = re.compile(r"\b(401|403)\b|permission|forbidden|not authori[sz]ed|unauthori[sz]ed|read[- ]only|not allowed", re.I)
+
+
+class JiraWriteRefused(RuntimeError):
+    """Jira (or the MCP server) refused a write: no permission, read-only mode or a missing tool."""
+
+
 class JiraGateway:
     def __init__(self, mcp: McpTools, tools: dict[str, str], status_order: tuple[str, ...]):
         self.mcp, self.tools, self.status_order = mcp, tools, status_order
 
     def missing_tools(self) -> list[str]:
         available = set(self.mcp.list_tools())
-        return sorted(t for t in self.tools.values() if t not in available)
+        return sorted(t for k, t in self.tools.items() if t not in available and k not in OPTIONAL_TOOLS)
+
+    def access_report(self) -> dict:
+        """What this server lets devflow do, from its tool list alone (nothing is written to test it):
+        {"read": bool, "comment": bool, "attach": bool, "missing_read": [...], "missing_write": [...]}.
+        A server in read-only mode hides its write tools, so it shows up here as comment=False."""
+        available = set(self.mcp.list_tools())
+        miss = lambda keys: [self.tools[k] for k in keys if self.tools.get(k) and self.tools[k] not in available]  # noqa: E731
+        missing_read, missing_write = miss(READ_TOOLS), miss(COMMENT_TOOLS[:1])
+        return {"read": not missing_read, "comment": not missing_write, "edit": not miss(COMMENT_TOOLS[1:]),
+                "attach": bool(self.tools.get("attach")) and not miss(("attach",)),
+                "missing_read": missing_read, "missing_write": missing_write}
+
+    def attachment_names(self, key: str) -> list[str]:
+        f = self._issue(key, "attachment")
+        f = f.get("fields", f)
+        return [a.get("filename", "") for a in (f.get("attachment") or f.get("attachments") or []) if isinstance(a, dict)]
+
+    def attach_files(self, key: str, paths: list[str]) -> list[str]:
+        """Upload files to the ticket, skipping names it already has (so a retry never duplicates them).
+        Returns the file names now on the ticket. Raises JiraWriteRefused when Jira says no."""
+        if not paths:
+            return []
+        if not self.tools.get("attach"):
+            raise JiraWriteRefused("no attachment tool configured (jira_tools.attach)")
+        have = set(self.attachment_names(key))
+        todo = [p for p in paths if Path(p).name not in have]
+        if todo:
+            self._write(self.tools["attach"], {"issue_key": key, "fields": {}, "attachments": json.dumps(todo)})
+        return [Path(p).name for p in paths]
+
+    def _write(self, tool: str, args: dict):
+        try:
+            return self.mcp.call(tool, args)
+        except Exception as e:  # noqa: BLE001 - a refusal is reported, anything else propagates (and is retried)
+            if PERMISSION_RE.search(str(e)) or "unknown tool" in str(e).lower():
+                raise JiraWriteRefused(str(e)[:500]) from e
+            raise
 
     def _issue(self, key: str, fields: str) -> dict:
         data = self.mcp.call(self.tools["get_issue"], {"issue_key": key, "fields": fields, "comment_limit": 100})
@@ -101,10 +149,10 @@ class JiraGateway:
         text = f"{body}\n\n{mark}"
         existing = self.find_comment(key, mark)
         if existing is None:
-            self.mcp.call(self.tools["add_comment"], {"issue_key": key, "comment": text})
+            self._write(self.tools["add_comment"], {"issue_key": key, "comment": text})
             return "added"
         if self.tools.get("edit_comment"):
-            self.mcp.call(self.tools["edit_comment"], {"issue_key": key, "comment_id": str(existing.get("id")), "comment": text})
+            self._write(self.tools["edit_comment"], {"issue_key": key, "comment_id": str(existing.get("id")), "comment": text})
             return "edited"
         return "exists"
 

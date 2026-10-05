@@ -159,6 +159,30 @@ class Vcs:
                 cur["detached"] = True
         return out
 
+    # --- ticket review: read-only checks of the developer's own checkout ------------------------------------
+    def commit_of(self, repo: str, sha: str) -> str:
+        """The full SHA if `sha` names a commit this clone has, else ""."""
+        r = self.run(repo, "git", "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}", check=False)
+        return (r.stdout or "").strip() if r.returncode == 0 else ""
+
+    def in_head(self, repo: str, sha: str) -> bool:
+        return self.ok(repo, "merge-base", "--is-ancestor", sha, "HEAD")
+
+    def branches_containing(self, repo: str, sha: str) -> list[str]:
+        """Remote branches (as of the last fetch) that contain the commit, e.g. ["origin/AQS-5512"]."""
+        out = self.git(repo, "branch", "-r", "--contains", sha, check=False)
+        return [b.strip() for b in out.splitlines() if b.strip() and "->" not in b]
+
+    def current_branch(self, repo: str) -> str:
+        return self.git(repo, "rev-parse", "--abbrev-ref", "HEAD", check=False)
+
+    def upstream(self, repo: str) -> str:
+        return self.git(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", check=False)
+
+    def show_commit(self, repo: str, sha: str) -> str:
+        """One commit's message and patch."""
+        return self.git(repo, "show", "--format=commit %H%nAuthor: %an%n%n%B", sha)
+
     def diff_against(self, repo: str, base: str) -> str:
         """Committed + uncommitted changes relative to the base branch (merge-base)."""
         mb = self.git(repo, "merge-base", base, "HEAD")

@@ -47,6 +47,12 @@ STEPS: dict[str, Step] = {
     # address-review
     "classify_comments": Step("sonnet", ("code-review",)),
     "map_to_repos": Step("sonnet", ("planning",)),
+    # ticket review (code review itself runs as the pr_review.* steps below)
+    "ticket_review.understand": Step("sonnet", ("requirements-analysis", "confluence-read")),
+    "ticket_review.coverage": Step("sonnet", ("code-review",)),
+    "ticket_review.test_plan": Step("opus", ("planning", "playwright"), domain=True),
+    "ticket_review.e2e": Step("sonnet", ("playwright",)),
+    "ticket_review.comment": Step("haiku", ("implementation-summary",)),
     # simple workflows
     "ticket_to_plan.analyze": Step("sonnet", ("requirements-analysis",)),
     "ticket_to_plan.plan": Step("opus", ("planning",), domain=True),

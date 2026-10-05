@@ -38,10 +38,13 @@ export function StartRunModal({ open, initialWorkflow, onClose, onStarted }: {
     setValues(init);
   }, [wid, fields]);
 
-  const repos = (values.repos as string[] | undefined) ?? [];
+  // The ticket review names its repos in the commit lines ("web-portal=3f9a1c2"); the other ticket workflows pick them.
+  const repos = Array.isArray(values.commits)
+    ? [...new Set((values.commits as string[]).map((l) => l.split("=")[0].trim()).filter((r) => meta?.repos.includes(r)))]
+    : ((values.repos as string[] | undefined) ?? []);
   const preflight = useQuery({
     queryKey: ["preflight", wid, repos.join(",")],
-    queryFn: () => api.runDoctor({ repos: repos.length ? repos : meta?.repos }),
+    queryFn: () => api.runDoctor({ repos: repos.length ? repos : meta?.repos, workflow: wid }),
     enabled: open && wf?.kind === "ticket" && !!meta?.loaded,
     staleTime: 30_000,
   });

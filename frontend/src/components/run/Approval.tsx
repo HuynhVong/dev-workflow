@@ -7,10 +7,11 @@ import { api, type Pending, type RunDetail, type Workflow } from "@/lib/api";
 import { cn, humanize } from "@/lib/format";
 import { JsonTree } from "../JsonTree";
 import { Button, ErrorNote, IconSquare, Label, Mono, Modal, Pill, Spinner, Textarea } from "../ui";
+import { CheckoutForm, CommentForm, HumanStepForm, ResultsForm, TestPlanForm } from "./TicketReviewForms";
 
 type Answer = Record<string, unknown> & { choice?: string };
 
-const APPROVING = new Set(["approve", "ok", "reuse", "fixed_by_hand", "retry"]);
+const APPROVING = new Set(["approve", "ok", "reuse", "fixed_by_hand", "retry", "ready", "continue", "accept"]);
 
 export function ApprovalPanel({ run, wf }: { run: RunDetail; wf?: Workflow }) {
   const pc = run.pending!;
@@ -98,7 +99,7 @@ export function ApprovalPanel({ run, wf }: { run: RunDetail; wf?: Workflow }) {
                     data-testid={`choice-${o}`}
                   >
                     {send.isPending && send.variables?.choice === o ? <Spinner /> : APPROVING.has(o) ? <Check className="size-4" /> : null}
-                    {LABELS[pc.name]?.[o] ?? LABELS._[o] ?? humanize(o)}
+                    {pc.name === "approve_comment" && o === "approve" && !p.will_post ? "Save for posting by hand" : (LABELS[pc.name]?.[o] ?? LABELS._[o] ?? humanize(o))}
                   </Button>
                 );
               })}
@@ -151,6 +152,11 @@ const LABELS: Record<string, Record<string, string>> = {
   approve_push: { approve: "Approve push" },
   route_ask: { answer: "Answer", fix: "Fix in repos", skip: "Skip these items" },
   triage: { approve: "Approve proposed actions" },
+  checkout_gate: { ready: "Checked out, verify" },
+  approve_test_plan: { approve: "Run ticked cases", regenerate: "Rewrite the plan" },
+  human_step: { continue: "Done, continue", skip: "Skip this case", fail: "Mark failed" },
+  review_results: { accept: "Accept results", retest: "Re-test ticked" },
+  approve_comment: { approve: "Approve & post to Jira", edit: "Use my edits", regenerate: "Rewrite" },
 };
 
 const NOTE_HINT: Record<string, string> = {
@@ -159,6 +165,10 @@ const NOTE_HINT: Record<string, string> = {
   manual_retest: "(required for feedback)",
   route_ask: "(the answer, or the fix instructions)",
   triage: "(extra instructions for every fix)",
+  approve_test_plan: "(test users or data the tester needs; required to rewrite)",
+  human_step: "(the value the test needs, e.g. the OTP; or why it failed)",
+  review_results: "(passed on to the re-test)",
+  approve_comment: "(required to rewrite)",
 };
 
 const BLOCKED: Record<string, (o: string, p: Record<string, any>, note: string, extra: Answer) => string | null> = {
@@ -168,6 +178,11 @@ const BLOCKED: Record<string, (o: string, p: Record<string, any>, note: string, 
   route_ask: (o, _p, note, extra) => (o === "answer" && !note.trim() ? "Write the answer in the note" : o === "fix" && !(extra.repos as string[] | undefined)?.length ? "Pick the repos to fix" : null),
   triage: (o, _p, _note, extra) => (o === "approve" && extra._edited ? "You changed some actions: use Apply my triage" : o === "edit" && !extra._edited ? "Change an action in the table first" : null),
   clarify: (o, _p, note, extra) => (o === "answer" && !note.trim() && !(extra.note as string) ? "Answer at least one question" : null),
+  checkout_gate: (o, p, _note, extra) => (o === "ready" && !String(extra.app_url ?? p.app_url ?? "").trim() ? "Give the app URL" : null),
+  approve_test_plan: (o, _p, note) => (o === "regenerate" && !note.trim() ? "Say what to change in the note" : null),
+  review_results: (o, _p, _note, extra) => (o === "retest" && Array.isArray(extra.retest) && !extra.retest.length ? "Tick the cases to re-test" : null),
+  approve_comment: (o, _p, note, extra) =>
+    o === "approve" && extra._edited ? "You edited the comment: use “Use my edits” first" : o === "edit" && !extra._edited ? "Edit the comment first" : o === "regenerate" && !note.trim() ? "Say what to change in the note" : null,
 };
 
 type FormProps = { p: Record<string, any>; run: RunDetail; extra: Answer; setExtra: (a: Answer) => void };
@@ -240,6 +255,11 @@ const FORMS: Record<string, (f: FormProps) => ReactNode> = {
     </Section>
   ),
   triage: ({ p, extra, setExtra }) => <TriageForm p={p} extra={extra} setExtra={setExtra} />,
+  checkout_gate: ({ p, run, extra, setExtra }) => <CheckoutForm p={p} runId={run.run_id} extra={extra} setExtra={setExtra} />,
+  approve_test_plan: ({ p, run, extra, setExtra }) => <TestPlanForm key={JSON.stringify(p.cases?.map((c: any) => c.title))} p={p} runId={run.run_id} extra={extra} setExtra={setExtra} />,
+  human_step: ({ p, run, extra, setExtra }) => <HumanStepForm p={p} runId={run.run_id} extra={extra} setExtra={setExtra} />,
+  review_results: ({ p, run, extra, setExtra }) => <ResultsForm key={JSON.stringify(p.results?.map((r: any) => r.id + r.status))} p={p} runId={run.run_id} extra={extra} setExtra={setExtra} />,
+  approve_comment: ({ p, run, extra, setExtra }) => <CommentForm p={p} runId={run.run_id} extra={extra} setExtra={setExtra} />,
 };
 
 function Section({ title, children, aside }: { title: ReactNode; children: ReactNode; aside?: ReactNode }) {

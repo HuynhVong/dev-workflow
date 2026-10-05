@@ -175,6 +175,16 @@ class Deps:
         playwright = {k: v for k, v in self.workspace.mcp_servers.items() if "playwright" in k.lower()}
         return ClaudeCodeAgent(scope, routing=self.routing, mcp_servers=playwright)
 
+    def e2e_agent(self, state: dict, evidence_dir: str, profile_dir: str) -> CodingAgent:
+        """A Claude Code agent whose Playwright MCP saves screenshots in `evidence_dir` and keeps its browser profile
+        (logins) in `profile_dir` between test cases."""
+        scope = ScopeGuard.from_state(state["scope"])
+        if self.coder_factory:
+            return self.coder_factory(scope)
+        playwright = {k: playwright_config(v, evidence_dir, profile_dir)
+                      for k, v in self.workspace.mcp_servers.items() if "playwright" in k.lower()}
+        return ClaudeCodeAgent(scope, routing=self.routing, mcp_servers=playwright)
+
     def run_cmd(self, cmd: str, cwd: str, env: dict | None = None) -> subprocess.CompletedProcess:
         """`env` adds variables (e.g. DEVFLOW_WORKTREE_<REPO>) on top of the current environment."""
         if self.cmd_runner:
@@ -205,6 +215,17 @@ class Deps:
                 yield
             finally:
                 fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def playwright_config(cfg: dict, output_dir: str, profile_dir: str) -> dict:
+    """A stdio Playwright MCP config with --output-dir and --user-data-dir added (unless already set)."""
+    if "command" not in cfg:
+        return cfg
+    args = list(cfg.get("args") or [])
+    for flag, value in (("--output-dir", output_dir), ("--user-data-dir", profile_dir)):
+        if not any(a == flag or a.startswith(flag + "=") for a in args):
+            args += [flag, value]
+    return {**cfg, "args": args}
 
 
 def _j(obj: Any) -> str:
