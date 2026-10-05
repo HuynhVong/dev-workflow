@@ -15,6 +15,7 @@ class RepoConfig:
     base_branch: str = "develop"
     has_ui: bool = False
     commands: dict[str, str] = field(default_factory=dict)  # lint, typecheck, test, build, run
+    app_url: str = ""                     # where the running app is reached, for the ticket review's E2E tests
     setup_commands: tuple[str, ...] = ()  # run once in a fresh worktree, e.g. `npm ci`
     copy_files: tuple[str, ...] = ()      # copied from the main clone into a fresh worktree, e.g. `.env.local`
     parallel_checks: bool = True          # false: checks run one run at a time (fixed ports, shared local DB)
@@ -33,6 +34,7 @@ DEFAULT_JIRA_TOOLS = {
     "edit_comment": "jira_edit_comment",
     "download_attachments": "jira_download_attachments",
     "get_user_profile": "jira_get_user_profile",
+    "attach": "jira_update_issue",  # optional: uploads files (its `attachments` argument); only ticket review uses it
 }
 DEFAULT_CONFLUENCE_READ_TOOLS = {
     "get_page": "confluence_get_page",
@@ -83,7 +85,7 @@ def load_workspace(path: str | Path) -> Workspace:
             base_branch=r.get("base_branch", "develop"), has_ui=bool(r.get("has_ui", False)),
             commands=dict(r.get("commands") or {}),
             setup_commands=tuple(r.get("setup_commands") or ()), copy_files=tuple(r.get("copy_files") or ()),
-            parallel_checks=bool(r.get("parallel_checks", True)),
+            parallel_checks=bool(r.get("parallel_checks", True)), app_url=str(r.get("app_url") or ""),
         )
     state_dir = Path(raw.get("state_dir", ".devflow")).expanduser()
     if not state_dir.is_absolute():

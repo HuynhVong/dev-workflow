@@ -104,6 +104,7 @@ class CodingAgent(Protocol):
     """`step` picks the model and the skills (routing.STEPS); `escalate` uses the step's stronger model."""
     def implement(self, repo: str, path: str, instructions: str, step: str = "implement", escalate: bool = False) -> CodingResult: ...
     def explore(self, repo: str, path: str, question: str, step: str = "discover_repos") -> CodingResult: ...
+    def test_case(self, repos: dict[str, str], instructions: str, step: str = "ticket_review.e2e") -> dict: ...
     def verify(self, repos: dict[str, str], instructions: str, step: str = "integration_check") -> CodingResult: ...
 
 
@@ -139,6 +140,20 @@ VERIFY_SCHEMA = {
     "required": ["passed", "results"],
 }
 
+E2E_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": ["passed", "failed", "needs_human"]},
+        "summary": {"type": "string", "description": "What you did and saw, in two or three sentences."},
+        "steps": {"type": "array", "items": {"type": "object", "properties": {
+            "step": {"type": "string"}, "ok": {"type": "boolean"}, "note": {"type": "string"}},
+            "required": ["step", "ok", "note"]}},
+        "screenshots": {"type": "array", "items": {"type": "string"}, "description": "File names of the screenshots you saved."},
+        "needs_human": {"type": "string", "description": "When status is needs_human: exactly what the developer must do or give you."},
+    },
+    "required": ["status", "summary", "steps", "screenshots", "needs_human"],
+}
+
 RULES = (
     "Rules you must follow:\n"
     "- Work only inside the repository paths you were given. Never read or edit other repositories.\n"
@@ -165,6 +180,13 @@ class ClaudeCodeAgent:
                         read_only=True, step=step, repo=repo)
         return CodingResult(ok=bool(out.get("confirmed")), summary=out.get("notes", ""), files_changed=out.get("relevant_files", []),
                             out_of_scope_needs=out.get("out_of_scope_needs", []), findings=out, raw=json.dumps(out))
+
+    def test_case(self, repos: dict[str, str], instructions: str, step: str = "ticket_review.e2e") -> dict:
+        """One E2E test case in the browser through the Playwright MCP. Read-only for source files."""
+        listing = "\n".join(f"- {n}: {p}" for n, p in repos.items())
+        return self._run(list(repos.values()), f"{RULES}\nThis step tests the running app in the browser and must NOT edit "
+                         f"source files.\nRepositories (for reading code only):\n{listing}\n\n{instructions}", E2E_SCHEMA,
+                         read_only=True, step=step)
 
     def verify(self, repos: dict[str, str], instructions: str, step: str = "integration_check") -> CodingResult:
         listing = "\n".join(f"- {n}: {p}" for n, p in repos.items())

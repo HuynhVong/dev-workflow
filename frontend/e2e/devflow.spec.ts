@@ -1,4 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 // Drives the offline demo server (tests/ui/demo_server.py) through the browser: real graphs, git repos and
 // worktrees, fake Claude, Jira and GitLab. Each test uses its own ticket key, since a ticket has one active run.
@@ -113,4 +115,48 @@ test("approvals filter, tokens, worktrees, settings and connections pages render
   await page.getByTestId("recheck").click();
   await expect(page.getByTestId("check-mcp.jira")).toContainText("OK");
   await expect(page.getByTestId("doctor-status")).not.toContainText("not checked");
+});
+
+test("a ticket review: checkout, approved test plan, a step that needs you, proof, and the Jira comment", async ({ page }) => {
+  const sha = readFileSync(join(process.env.DEVFLOW_E2E_DIR!, "review-commit.txt"), "utf8").trim();
+  await open(page);
+  await page.getByTestId("new-run").click();
+  await page.getByTestId("workflow-select").selectOption("ticket_review");
+  await page.getByRole("textbox", { name: "Jira ticket" }).fill("aqs-900");
+  await page.getByLabel("Commits per repo").fill(`web=${sha}`);
+  await expect(page.getByTestId("preflight")).toContainText("checks OK");
+  await page.getByTestId("start-run").click();
+
+  await expect(panel(page, "checkout_gate")).toBeVisible();
+  await expect(page.getByTestId("checkout-web")).toContainText("rtk git checkout AQS-900");
+  await expect(page.getByTestId("app-url")).toHaveValue("http://localhost:5173");
+  await page.getByTestId("app-url").fill("http://localhost:3000");
+  await page.getByTestId("choice-ready").click();
+
+  await expect(panel(page, "approve_test_plan")).toBeVisible();
+  await expect(page.getByTestId("test-plan")).toContainText("Filtered export");
+  await expect(page.getByTestId("choice-regenerate")).toBeDisabled();
+  await page.getByTestId("choice-approve").click();
+
+  await expect(panel(page, "human_step")).toBeVisible();
+  await expect(page.getByTestId("human-ask")).toContainText("Log in with your SSO account");
+  await expect(panel(page, "human_step")).toContainText("Open http://localhost:3000");
+  await page.getByLabel("Decision note").fill("Logged in as qa@acme.io");
+  await page.getByTestId("choice-continue").click();
+
+  await expect(panel(page, "review_results")).toBeVisible();
+  await expect(page.getByTestId("test-results")).toContainText("TC2");
+  await expect(page.getByTestId("proof-shots").first().locator("img").first()).toHaveJSProperty("complete", true);
+  await page.getByTestId("choice-accept").click();
+
+  await expect(panel(page, "approve_comment")).toBeVisible();
+  await expect(page.getByTestId("jira-comment")).toHaveValue(/Ticket review: AQS-900/);
+  await expect(page.getByTestId("choice-edit")).toBeDisabled();
+  await page.getByTestId("jira-comment").fill((await page.getByTestId("jira-comment").inputValue()) + "\n\nAlso checked on Safari.");
+  await expect(page.getByTestId("choice-approve")).toBeDisabled();
+  await page.getByTestId("choice-edit").click();
+  await expect(page.getByTestId("jira-comment")).toHaveValue(/Also checked on Safari\./);
+  await page.getByTestId("choice-approve").click();
+
+  await expect(page.getByTestId("run-output")).toContainText("Posted to Jira");
 });

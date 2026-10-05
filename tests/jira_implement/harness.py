@@ -77,22 +77,31 @@ def sh(*cmd, cwd=None):
 
 
 class FakeMcp:
-    def __init__(self, tools, status="In Progress"):
+    def __init__(self, tools, status="In Progress", refuse=()):
         self.tools = set(tools)
         self.calls = []
         self.status = status
         self.comments = []
+        self.attachments = []
+        self.refuse = set(refuse)  # tools that answer like Jira without permission
 
     def list_tools(self):
         return sorted(self.tools)
 
     def call(self, tool, args):
         self.calls.append((tool, args))
+        if tool in self.refuse:
+            raise RuntimeError(f"atlassian.{tool} failed: Error 403: Forbidden - you do not have permission")
         if tool == "jira_get_issue":
             return {"key": args["issue_key"], "fields": {
                 "summary": "Export orders as CSV", "description": "Export with filters. Spec: https://acme.atlassian.net/wiki/spaces/SHOP/pages/12345/Export",
                 "status": {"name": self.status}, "assignee": {"emailAddress": "dev@acme.io"},
-                "comment": {"comments": list(self.comments)}}}
+                "comment": {"comments": list(self.comments)}, "attachment": [{"filename": n} for n in self.attachments]}}
+        if tool == "jira_download_attachments":
+            return {"downloaded": []}
+        if tool == "jira_update_issue":
+            self.attachments += [Path(p).name for p in json.loads(args["attachments"])]
+            return {"ok": True}
         if tool == "jira_get_transitions":
             return [{"id": "31", "to": {"name": "Code Review"}}]
         if tool == "jira_transition_issue":
@@ -111,7 +120,7 @@ class FakeMcp:
         raise AssertionError(f"unexpected tool {tool}")
 
     def writes(self):
-        return [c for c in self.calls if c[0] in ("jira_transition_issue", "jira_add_comment", "jira_edit_comment")]
+        return [c for c in self.calls if c[0] in ("jira_transition_issue", "jira_add_comment", "jira_edit_comment", "jira_update_issue")]
 
 
 class FakeCoder:

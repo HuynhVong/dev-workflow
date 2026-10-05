@@ -146,3 +146,50 @@ class ReviewTriage(BaseModel):
 class ReviewFixPlan(BaseModel):
     edges: list[DagEdge] = Field(description="Dependency edges between the repos being fixed. Independent repos have none.")
     integration_required: bool
+
+
+# --- ticket review ---------------------------------------------------------------
+class TicketUnderstanding(BaseModel):
+    summary: str = Field(description="What the ticket asks for, in two or three plain sentences.")
+    requirement: list[str] = Field(description="The detailed requirement: business rules, validations, flows, edge cases.")
+    acceptance_criteria: list[str] = Field(description="Testable acceptance criteria, from the ticket or derived from it.")
+    out_of_scope: list[str] = Field(description="What the ticket explicitly does not cover. Empty if none.")
+    unclear: list[str] = Field(description="Points the ticket leaves unclear that matter for reviewing or testing. Empty if none.")
+
+
+class CriterionCoverage(BaseModel):
+    criterion: str
+    status: Literal["met", "partial", "missing", "unclear"]
+    evidence: str = Field(description="Where in the diff it is implemented (file and what), or what is missing.")
+
+
+class Coverage(BaseModel):
+    criteria: list[CriterionCoverage]
+    unrelated_changes: list[str] = Field(description="Changes in the commits that the ticket does not ask for. Empty if none.")
+
+
+class TestCase(BaseModel):
+    __test__ = False  # not a pytest class
+    title: str
+    criterion: str = Field(description="The acceptance criterion this case proves.")
+    preconditions: list[str] = Field(description="Data or state needed before the steps (user role, existing records). Empty if none.")
+    steps: list[str] = Field(description="Browser steps, one action each.")
+    expected: str
+    mode: Literal["auto", "needs_you"] = Field(description="needs_you when a person must act: OTP, captcha, real payment, "
+                                                           "an email inbox, a device, or data only the developer can create.")
+    needs_you_reason: str = Field(description="What the person must do, when mode is needs_you. Empty otherwise.")
+    proof: list[str] = Field(description="What each screenshot must show to prove the criterion.")
+
+
+class TestPlanDraft(BaseModel):
+    __test__ = False
+    cases: list[TestCase]
+    not_testable: list[str] = Field(description="Criteria that cannot be checked in the browser, and why. Empty if none.")
+
+
+class CommentDraft(BaseModel):
+    conclusion: Literal["ready", "needs_changes", "blocked"] = Field(
+        description="ready: criteria met and tests pass; needs_changes: blocker/major findings, missing criteria or failed tests; "
+                    "blocked: the review could not be completed.")
+    summary: str = Field(description="Three to five plain sentences for the Jira comment: what the ticket needs, whether "
+                                     "the commits deliver it, and what the tests showed.")

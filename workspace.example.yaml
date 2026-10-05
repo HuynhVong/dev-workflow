@@ -23,6 +23,7 @@ repos:
     path: ~/code/web-portal
     gitlab_project: acme/web-portal
     has_ui: true                    # needs the Playwright MCP below
+    app_url: http://localhost:5173  # where the ticket review's E2E tests reach the running app
     commands:
       lint: pnpm lint
       typecheck: pnpm tsc --noEmit
@@ -33,6 +34,8 @@ repos:
     parallel_checks: false          # its tests use a fixed port: checks run one ticket at a time
 
 # MCP servers. Jira needs read + write; Confluence is only ever READ (write tools are never exposed).
+# Jira can instead be the MCP server you connected to Claude Code (`claude mcp add ...`): when `jira_server` is not
+# listed here, devflow uses Claude Code's server of that name, else one whose name mentions jira or atlassian.
 mcp_servers:
   atlassian:
     command: uvx
@@ -54,6 +57,7 @@ jira_user: you@acme.io              # warns if the ticket is assigned to someone
 
 # Tool names default to sooperset/mcp-atlassian. Override any that differ in your server:
 # jira_tools: {get_issue: jira_get_issue, add_comment: jira_add_comment, edit_comment: jira_edit_comment, ...}
+#   attach: jira_update_issue      (optional) uploads the ticket review's proof screenshots via its `attachments` argument
 # confluence_tools: {get_page: confluence_get_page, search: confluence_search, ...}
 
 status_order: [To Do, In Progress, Code Review]   # Jira status only ever moves forward

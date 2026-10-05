@@ -23,6 +23,8 @@ from .manager import RunManager
 
 STATIC = Path(__file__).parent / "static"
 ACTIVE = ("PENDING", "RUNNING", "WAITING_HUMAN", "FAILED")
+ANSWER_KEYS = ("choice", "note", "repos", "approve_repos", "fix", "answer", "skip", "value",
+               "app_url", "run", "cases", "retest", "comment")  # the last five: ticket review checkpoints
 
 
 class App:
@@ -99,11 +101,11 @@ def create_app(state: App) -> FastAPI:
     def run_doctor(body: dict = Body(default={})):
         session, _ = state.need()
         repos = body.get("repos") or None
-        checks = doctor.run(session.ws, deps=_deps_or_none(session), repos=repos)
+        checks = doctor.run(session.ws, deps=_deps_or_none(session), repos=repos, workflow=body.get("workflow") or "")
         if body.get("ping_models"):
             checks += doctor.ping_models(Routing.from_config(session.ws.ai))
         result = {"checks": [c.to_dict() for c in checks], "summary": doctor.summary(checks), "at": time.time()}
-        if not repos:
+        if not repos and not body.get("workflow"):
             state.doctor_result = result
         return result
 
@@ -210,8 +212,7 @@ def create_app(state: App) -> FastAPI:
             raise HTTPException(409, {"error": "not_waiting", "detail": f"{run_id} is not waiting at a checkpoint ({r['status']})"})
         if not pc.get("generic") and body.get("choice") not in pc["options"]:
             raise HTTPException(400, {"error": "invalid", "detail": f"choose one of {pc['options']}"})
-        ans = {k: v for k, v in body.items() if k in ("choice", "note", "repos", "approve_repos", "fix", "answer", "skip", "value")
-               and v not in (None, "", [])}
+        ans = {k: v for k, v in body.items() if k in ANSWER_KEYS and v not in (None, "", [])}
         try:
             manager.answer(run_id, ans)
         except RuntimeError as e:
@@ -294,11 +295,26 @@ def create_app(state: App) -> FastAPI:
                   **({"runner": session.deps.vcs_runner} if session.deps.vcs_runner else {}))
         base = session.ws.repos[repo].base_branch if repo in session.ws.repos else "develop"
         try:
-            text = vcs.diff_against(repo, f"origin/{base}")
+            if values.get("commits"):  # ticket review: the reviewed commits, read from your own clone without touching it
+                text = "\n\n".join(vcs.show_commit(repo, sha) for sha in values["commits"].get(repo, []))
+            else:
+                text = vcs.diff_against(repo, f"origin/{base}")
         except Exception as e:  # noqa: BLE001
             return {"repo": repo, "diff": "", "files": [], "note": f"{type(e).__name__}: {e}"}
         files = [l[len("diff --git a/"):].split(" b/")[0] for l in text.splitlines() if l.startswith("diff --git a/")]
         return {"repo": repo, "diff": text[:2_000_000], "files": files, "path": scope[repo], "ticket": r["ticket"]}
+
+    @api.get("/api/runs/{run_id}/file")
+    def run_file(run_id: str, path: str):
+        """A file a run wrote under its own folder in state_dir (e.g. a ticket review's proof screenshots)."""
+        session, _ = state.need()
+        _run_or_404(session, run_id)
+        root = Path(session.ws.state_dir, run_id).resolve()
+        target = Path(path)
+        target = (target if target.is_absolute() else root / target).resolve()
+        if not target.is_relative_to(root) or not target.is_file():
+            raise HTTPException(404, {"error": "not_found", "detail": "no such file in this run's folder"})
+        return FileResponse(target)
 
     @api.get("/api/runs/{run_id}/usage")
     def run_usage(run_id: str):

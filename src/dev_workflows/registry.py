@@ -1,7 +1,7 @@
 """Every workflow the UI and CLI can run, found by discovery rather than a fixed list.
 
 Sources, merged in this order (the first id wins):
-1. built-ins: the five devflow workflows;
+1. built-ins: the devflow workflows;
 2. `register_workflow(id, factory, ...)` calls, and `devflow.workflows` entry points in any installed package;
 3. every graph in this repo's `langgraph.json`, plus extra `langgraph.json` files under `ui.graph_sources` in
    workspace.yaml.
@@ -52,12 +52,16 @@ def register_workflow(id: str, factory: Callable[..., Any], *, title: str = "", 
 
 
 def _builtins() -> list[WorkflowSpec]:
-    from .jira_implement import address_review, graph
-    from .workflows import pr_review, standup, ticket_to_plan
+    from .jira_implement import address_review, graph, ticket_review
+    from .workflows import standup, ticket_to_plan
     out = [WorkflowSpec(graph.WORKFLOW, lambda deps, cp: graph.build_graph(deps, checkpointer=cp), kind="ticket", ui=graph.DEVFLOW_UI),
            WorkflowSpec(address_review.WORKFLOW, lambda deps, cp: address_review.build_review_graph(deps, checkpointer=cp),
-                        kind="ticket", ui=address_review.DEVFLOW_UI)]
-    for mod, wid in ((ticket_to_plan, "ticket_to_plan"), (pr_review, "pr_review"), (standup, "standup")):
+                        kind="ticket", ui=address_review.DEVFLOW_UI),
+           WorkflowSpec(ticket_review.WORKFLOW, lambda deps, cp: ticket_review.build_graph(deps, checkpointer=cp),
+                        kind="ticket", ui=ticket_review.DEVFLOW_UI)]
+    # pr_review (diff in, Markdown out) is no longer a workflow of its own: it is the code review engine inside the
+    # ticket review, jira ticket implement and address-review.
+    for mod, wid in ((ticket_to_plan, "ticket_to_plan"), (standup, "standup")):
         out.append(WorkflowSpec(wid, (lambda m: lambda cp: m.build_graph(checkpointer=cp))(mod), ui=getattr(mod, "DEVFLOW_UI", {})))
     return out
 

@@ -230,7 +230,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 export const api = {
   meta: () => call<Meta>("GET", "/api/meta"),
   doctor: () => call<DoctorResult>("GET", "/api/doctor"),
-  runDoctor: (body: { repos?: string[]; ping_models?: boolean } = {}) => call<DoctorResult>("POST", "/api/doctor/run", body),
+  runDoctor: (body: { repos?: string[]; ping_models?: boolean; workflow?: string } = {}) => call<DoctorResult>("POST", "/api/doctor/run", body),
   workspace: () => call<WorkspaceDoc>("GET", "/api/workspace"),
   saveWorkspace: (data: Record<string, unknown>) => call<WorkspaceDoc>("PUT", "/api/workspace", { data }),
   skills: () => call<Skills>("GET", "/api/skills"),

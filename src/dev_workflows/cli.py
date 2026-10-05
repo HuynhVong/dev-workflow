@@ -1,14 +1,15 @@
 """Run a workflow from the terminal.
 
   devflow plan   --ticket ticket.md [--context stack.md] [--no-interactive]
-  devflow review --title "Add search" --diff <(git diff main...HEAD) [--description pr.md]
   devflow standup --repo ~/code/api --repo ~/code/web [--since "yesterday"] [--author me@x.com] [--notes notes.md]
 
 Jira ticket implement (needs workspace.yaml, see workspace.example.yaml):
-  devflow setup                           first run: models per step, global skills to install
+  devflow setup [--ticket AQS-5512]       first run: Jira MCP (required), models per step, global skills to install
   devflow implement AQS-5512 [--repos api-service,web-portal] [--no-input]
   devflow address-review AQS-5512 [--repos api-service,web-portal] [--no-input]
+  devflow review AQS-5512 --commit web-portal=3f9a1c2 [--commit api-service=88be0d4,a17c3e9] [--app-url URL] [--no-input]
   devflow answer <run_id> --choice approve [--note "..."] [--repos a,b] [--approve-repos x] [--fix 1,3 --answer-only 2 --skip 4]
+                 [--app-url URL] [--run TC1,TC2] [--retest TC2] [--comment-file comment.md]
   devflow resume <run_id> [--reopen]      devflow abort <run_id> [--note "..."]
   devflow status <run_id>                 devflow show <run_id>          devflow runs
   devflow worktrees                       devflow worktree-clean <ticket> [--repo api-service]
@@ -22,7 +23,7 @@ from pathlib import Path
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
-from .workflows import pr_review, standup, ticket_to_plan
+from .workflows import standup, ticket_to_plan
 
 
 def _read(path: str | None) -> str:
@@ -49,12 +50,6 @@ def run_plan(args) -> str:
     return result["output"]
 
 
-def run_review(args) -> str:
-    return pr_review.graph.invoke(
-        {"title": args.title, "description": _read(args.description), "diff": _read(args.diff), "findings": []}
-    )["output"]
-
-
 def run_standup(args) -> str:
     return standup.graph.invoke(
         {"repo_paths": args.repo or [], "since": args.since, "author": args.author, "notes": _read(args.notes)}
@@ -70,12 +65,6 @@ def main(argv: list[str] | None = None) -> None:
     sp.add_argument("--context", help="notes about the repo/stack")
     sp.add_argument("--no-interactive", action="store_true", help="don't stop for clarifying questions")
     sp.set_defaults(fn=run_plan)
-
-    sr = sub.add_parser("review", help="review a diff")
-    sr.add_argument("--title", required=True)
-    sr.add_argument("--diff", required=True, help="file path, or - for stdin")
-    sr.add_argument("--description")
-    sr.set_defaults(fn=run_review)
 
     ss = sub.add_parser("standup", help="standup notes from git + notes")
     ss.add_argument("--repo", action="append")
@@ -119,16 +108,35 @@ def _add_implement_commands(sub) -> None:
     common(si, run=False)
     si.set_defaults(fn=lambda a: _session(a).start(a.ticket, _csv(a.repos)) and None)
 
-    su = sub.add_parser("setup", help="first-time setup: models per step and the global Claude Code skills to install")
+    st = sub.add_parser("review", help="Jira ticket + its commits -> code review, approved E2E tests with proof, Jira comment")
+    st.add_argument("ticket")
+    st.add_argument("--commit", action="append", required=True, metavar="REPO=SHA[,SHA]",
+                    help="the ticket's commits in one repo (repeat per changed repo)")
+    st.add_argument("--app-url", help="where the running app is (default: app_url of the repo in workspace.yaml)")
+    common(st, run=False)
+
+    def do_ticket_review(a):
+        from .jira_implement.ticket_review import WORKFLOW as TICKET_REVIEW
+        _session(a).start_run(TICKET_REVIEW, {"ticket": a.ticket, "commits": a.commit, "app_url": a.app_url or ""})
+    st.set_defaults(fn=do_ticket_review)
+
+    su = sub.add_parser("setup", help="first-time setup: Jira MCP (required), models per step, global Claude Code skills")
     su.add_argument("--workspace", help="path to workspace.yaml (default: $DEVFLOW_WORKSPACE or ./workspace.yaml)")
+    su.add_argument("--ticket", help="a ticket key you can see, to prove the Jira MCP can read it")
 
     def do_setup(a):
+        from . import doctor
         from .jira_implement.runner import load
         from .routing import Routing, setup_report
         ws = load(a.workspace)
+        jira, source = doctor.jira_gateway(ws)
+        checks = doctor.jira_access_checks(ws, jira, source, ticket=a.ticket or "")
+        print("Jira MCP (required)\n" + "\n".join(
+            f"  {dict(ok='✓', warn='!', fail='✗')[c.status]} {c.label}: {c.detail}" + (f"\n      fix: {c.fix}" if c.fix and c.status != "ok" else "")
+            for c in checks) + "\n")
         report, ok = setup_report(Routing.from_config(ws.ai), {n: r.path for n, r in ws.repos.items()})
         print(report)
-        if not ok:
+        if not ok or doctor.summary(checks)["blocking"]:
             raise SystemExit(1)
     su.set_defaults(fn=do_setup)
 
@@ -152,6 +160,10 @@ def _add_implement_commands(sub) -> None:
     sa.add_argument("--answer-only", help="address-review triage (choice edit): thread numbers to answer without code")
     sa.add_argument("--skip", help="address-review triage (choice edit): thread numbers to skip")
     sa.add_argument("--value", help="answer for a plain interrupt() of another graph (free text)")
+    sa.add_argument("--app-url", help="ticket review checkout (choice ready): where the running app is")
+    sa.add_argument("--run", help="ticket review test plan (choice approve): case ids to run, default all")
+    sa.add_argument("--retest", help="ticket review results (choice retest): case ids to run again")
+    sa.add_argument("--comment-file", help="ticket review comment (choice edit): file with your edited comment")
 
     def do_answer(a):
         if a.value is not None:
@@ -161,9 +173,13 @@ def _add_implement_commands(sub) -> None:
             ans["repos"] = _csv(a.repos)
         if a.approve_repos:
             ans["approve_repos"] = _csv(a.approve_repos)
-        for key, value in (("fix", a.fix), ("answer", a.answer_only), ("skip", a.skip)):
+        for key, value in (("fix", a.fix), ("answer", a.answer_only), ("skip", a.skip), ("run", a.run), ("retest", a.retest)):
             if value:
                 ans[key] = _csv(value)
+        if a.app_url:
+            ans["app_url"] = a.app_url
+        if a.comment_file:
+            ans["comment"] = Path(a.comment_file).expanduser().read_text()
         _session(a).answer(a.run_id, ans)
     sa.set_defaults(fn=do_answer)
 

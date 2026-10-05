@@ -66,8 +66,9 @@ def tool_checks(ws, which: Callable[[str], str | None], repos: list[str]) -> lis
 def mcp_checks(ws, jira, confluence, need_confluence: bool = True) -> list[Check]:
     out = []
     if jira is None:
-        out.append(_fail("mcp.jira", "Jira MCP", "Jira MCP reachable", f"Jira MCP server '{ws.jira_server}' is not configured in workspace.yaml",
-                         "Add it under mcp_servers (see workspace.example.yaml)."))
+        from .jira_implement.mcp_config import ADD_JIRA_HINT
+        out.append(_fail("mcp.jira", "Jira MCP", "Jira MCP reachable",
+                         f"no Jira MCP: '{ws.jira_server}' is neither in workspace.yaml nor connected to Claude Code", ADD_JIRA_HINT))
     else:
         try:
             missing = jira.missing_tools()
@@ -93,13 +94,64 @@ def mcp_checks(ws, jira, confluence, need_confluence: bool = True) -> list[Check
     return out
 
 
-def vcs_checks(ws, vcs, repos: list[str]) -> tuple[list[Check], list[str]]:
+def jira_access_checks(ws, jira, source: str = "", ticket: str = "") -> list[Check]:
+    """First-time setup: a Jira MCP connected to Claude Code is required. Read access is required; comment and
+    attachment access decide whether the ticket review can post its result (else it saves it for you to post by hand).
+    Nothing is written to test this: the real permission check is the first post. `ticket` adds a read of that ticket."""
+    from .jira_implement.mcp_config import ADD_JIRA_HINT
+    if jira is None:
+        return [_fail("mcp.jira.setup", "Jira MCP", "Jira MCP connected to Claude Code",
+                      f"no Jira MCP found ('{ws.jira_server}' is neither in workspace.yaml nor in Claude Code's MCP servers)", ADD_JIRA_HINT)]
+    out = []
+    try:
+        rep = jira.access_report()
+    except Exception as e:  # noqa: BLE001
+        return [_fail("mcp.jira.setup", "Jira MCP", "Jira MCP connected to Claude Code", f"Jira MCP did not answer: {e}",
+                      "Check the server command, URL and token (`claude mcp list` shows its state).")]
+    where = f" (from {source})" if source else ""
+    out.append(_ok("mcp.jira.read", "Jira MCP", "Jira MCP can read tickets", f"read tools present{where}") if rep["read"] else
+               _fail("mcp.jira.read", "Jira MCP", "Jira MCP can read tickets", f"missing read tools {rep['missing_read']}{where}",
+                     "Point jira_tools in workspace.yaml at your server's tool names."))
+    if rep["comment"]:
+        out.append(_ok("mcp.jira.comment", "Jira MCP", "Jira MCP can post comments", "comment tools present"))
+    else:
+        out.append(_warn("mcp.jira.comment", "Jira MCP", "Jira MCP can post comments",
+                         f"no comment tool {rep['missing_write']} (read-only mode?): the ticket review saves its comment "
+                         "locally for you to post by hand",
+                         "Turn off the server's read-only mode (e.g. READ_ONLY_MODE for mcp-atlassian) or map jira_tools.add_comment."))
+    out.append(_ok("mcp.jira.attach", "Jira MCP", "Jira MCP can attach files", "attachment tool present") if rep["attach"] else
+               _warn("mcp.jira.attach", "Jira MCP", "Jira MCP can attach files",
+                     "no attachment tool: proof screenshots stay local and the comment lists their names",
+                     "Map jira_tools.attach to your server's upload tool (mcp-atlassian: jira_update_issue)."))
+    if ticket:
+        try:
+            jira.status_and_assignee(ticket)
+            out.append(_ok("mcp.jira.ticket", "Jira MCP", f"Read {ticket}", "ticket readable"))
+        except Exception as e:  # noqa: BLE001
+            out.append(_fail("mcp.jira.ticket", "Jira MCP", f"Read {ticket}", f"cannot read {ticket}: {str(e)[:200]}",
+                             "Check the token's permissions for that project."))
+    return out
+
+
+def jira_gateway(ws):
+    """(JiraGateway, source) for the Jira server from workspace.yaml or Claude Code, or (None, "")."""
+    from .jira_implement.jira import JiraGateway
+    from .jira_implement.mcp_client import StdioOrHttpMcp
+    from .jira_implement.mcp_config import resolve_jira_server
+    found = resolve_jira_server(ws)
+    if not found:
+        return None, ""
+    name, cfg, source = found
+    return JiraGateway(StdioOrHttpMcp(name, cfg), ws.jira_tools, ws.status_order), source
+
+
+def vcs_checks(ws, vcs, repos: list[str], glab: bool = True) -> tuple[list[Check], list[str]]:
     """git/glab through rtk, then each repo: a git repo whose origin is reachable. Returns (checks, reachable repos)."""
     out, ok_repos = [], []
     if not repos:
         return out, ok_repos
     first = next((r for r in repos if Path(ws.repos[r].path).is_dir()), None)
-    for args in (("git", "--version"), ("glab", "auth", "status")):
+    for args in (("git", "--version"), ("glab", "auth", "status"))[:2 if glab else 1]:
         label = f"{ws.vcs_prefix} {' '.join(args)}".strip()
         if first is None:
             out.append(_fail(f"cli.{args[0]}", "CLIs", label, "not checked: no repo folder in workspace.yaml exists yet", blocking=False))
@@ -170,31 +222,41 @@ def optional_checks(ws) -> list[Check]:
 
 
 def run(ws, deps=None, repos: list[str] | None = None, which: Callable = shutil.which, include_optional: bool = True,
-        vcs_runner=None) -> list[Check]:
+        vcs_runner=None, workflow: str = "") -> list[Check]:
     """Every check, for the setup screen and `devflow doctor`. `deps` (a jira_implement Deps) supplies the MCP
-    gateways and fakes in tests; without it the gateways are built from workspace.yaml."""
+    gateways and fakes in tests; without it the gateways come from workspace.yaml or Claude Code. `workflow` =
+    "ticket_review" checks only what that workflow needs: no glab, no worktrees, Confluence optional, Playwright MCP."""
+    review = workflow == "ticket_review"
     from .jira_implement import worktrees
     repos = list(repos if repos is not None else ws.repos)
     jira = confluence = None
+    source = ""
     if deps is not None:
         jira, confluence, which, vcs_runner = deps.jira, deps.confluence, deps.which, deps.vcs_runner
     else:
         from .jira_implement.confluence import ConfluenceReader
-        from .jira_implement.jira import JiraGateway
         from .jira_implement.mcp_client import StdioOrHttpMcp
-        if ws.jira_server in ws.mcp_servers:
-            jira = JiraGateway(StdioOrHttpMcp(ws.jira_server, ws.mcp_servers[ws.jira_server]), ws.jira_tools, ws.status_order)
+        jira, source = jira_gateway(ws)
         if ws.confluence_server in ws.mcp_servers:
             confluence = ConfluenceReader(StdioOrHttpMcp(ws.confluence_server, ws.mcp_servers[ws.confluence_server]), ws.confluence_tools)
-    checks = ai_checks() + tool_checks(ws, which, repos) + mcp_checks(ws, jira, confluence)
+        elif jira is not None and ws.confluence_server == ws.jira_server:
+            confluence = ConfluenceReader(jira.mcp, ws.confluence_tools)  # one Atlassian server; Confluence stays read-only
+    checks = ai_checks() + tool_checks(ws, which, repos) + mcp_checks(ws, jira, confluence, need_confluence=not review)
+    checks += [c for c in jira_access_checks(ws, jira, source) if c.id != "mcp.jira.setup"]
+    if review and not any(c.id == "mcp.playwright" for c in checks):
+        has = any("playwright" in k.lower() for k in ws.mcp_servers)
+        checks.append(_ok("mcp.playwright", "Playwright MCP", "Playwright MCP configured") if has else
+                      _fail("mcp.playwright", "Playwright MCP", "Playwright MCP configured", "the ticket review's E2E tests need a Playwright MCP",
+                            "Add a `playwright` server under mcp_servers in workspace.yaml (npx @playwright/mcp@latest)."))
     known = [r for r in repos if r in ws.repos]
     if known:
-        more, _ = vcs_checks(ws, worktrees.source_vcs(ws, known, vcs_runner), known)
+        more, _ = vcs_checks(ws, worktrees.source_vcs(ws, known, vcs_runner), known, glab=not review)
         checks += more
-    root = Path(ws.worktree_root)
-    probe = root if root.exists() else next((p for p in root.parents if p.exists()), Path("/"))
-    checks.append(_ok("repo.worktree_root", "Repos", "Worktree folder", f"{root} (writable)") if os.access(probe, os.W_OK) else
-                  _fail("repo.worktree_root", "Repos", "Worktree folder", f"{root} is not writable", "Set worktree_root in workspace.yaml."))
+    if not review:
+        root = Path(ws.worktree_root)
+        probe = root if root.exists() else next((p for p in root.parents if p.exists()), Path("/"))
+        checks.append(_ok("repo.worktree_root", "Repos", "Worktree folder", f"{root} (writable)") if os.access(probe, os.W_OK) else
+                      _fail("repo.worktree_root", "Repos", "Worktree folder", f"{root} is not writable", "Set worktree_root in workspace.yaml."))
     routing = deps.routing if deps is not None else Routing.from_config(ws.ai)
     checks += skill_checks(routing)
     if include_optional:
