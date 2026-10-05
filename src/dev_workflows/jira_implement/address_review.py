@@ -14,9 +14,12 @@ from typing_extensions import TypedDict
 
 from ..llm import AsStep
 from . import dag as dagmod
-from .graph import SYSTEM, TRANSIENT, Deps, GraphKit, _j, _tail, check_environment, merge_repos, route_feedback
+from . import worktrees
+from .graph import (CHECKPOINT_TITLES, HIDDEN_NODES, SYSTEM, TICKET_FORM, TRANSIENT, Deps, GraphKit, _j, _tail,
+                    check_environment, merge_repos, route_feedback, run_repo_checks)
 from .jira import marker
 from .ledger import Effect, perform
+from .scope import ScopeGuard
 from .models import ContractCheck, ContractReview, FeedbackAnalysis, ReviewFixPlan, ReviewTriage
 from .vcs import Vcs
 
@@ -24,6 +27,24 @@ WORKFLOW = "address_review"
 REVIEW_STEPS = ("classify_comments", "map_to_repos", "targeted_fix", "integration_check", "repo_review", "contract_review",
                 "analyze_feedback_and_route")
 REPLY_MARK = "<!-- devflow:{run_id}:{thread} -->"
+
+
+DEVFLOW_UI = {
+    "title": "Address review",
+    "description": "Reads unresolved threads on the ticket's draft MRs, lets you triage them, fixes and re-tests, then replies.",
+    "icon": "message-square", "color": "#b78cff", "form": TICKET_FORM, "checkpoints": CHECKPOINT_TITLES, "hidden_nodes": HIDDEN_NODES,
+    "steps": ["preflight", "prepare_worktrees", "load_mrs", "read_discussions", "classify_comments", "triage", "map_to_repos",
+              "sync_branches", "fix_repo", "integration_check", "manual_retest", "repo_review", "contract_review", "approve_push",
+              "push_updates", "reply_to_discussions", "jira_refresh", "summary"],
+    "nodes": {"preflight": "Preflight", "prepare_worktrees": "Prepare worktrees", "load_mrs": "Load draft MRs",
+              "read_discussions": "Read review threads", "classify_comments": "Classify comments", "triage": "Triage",
+              "map_to_repos": "Map fixes to repos", "sync_branches": "Sync branches", "sync_blocked": "Sync blocked",
+              "fix_repo": "Fix", "budget_exhausted": "Fix budget used", "integration_check": "Integration check",
+              "manual_retest": "Manual re-test", "repo_review": "Repo review", "contract_review": "Contract review",
+              "analyze_feedback_and_route": "Route feedback", "route_ask": "Feedback decision", "approve_push": "Approve push",
+              "push_updates": "Push updates", "push_blocked": "Push blocked", "reply_to_discussions": "Reply in threads",
+              "jira_refresh": "Update Jira comment", "summary": "Summary", "nothing_to_do": "Nothing to do", "abort": "Aborted"},
+}
 
 
 class ReviewState(TypedDict, total=False):
@@ -82,6 +103,7 @@ def build_review_graph(deps: Deps, checkpointer=None):
                 "integration_version": -1, "manual_test_version": -1, "review_version": -1}
 
     node("preflight", preflight)
+    node("prepare_worktrees", lambda s: {"scope": ScopeGuard.create({r: deps.worktree(s, r) for r in s["scope"]}).to_state()})
 
     # 1 -------------------------------------------------------------------------------------------
     def load_mrs(state):
@@ -123,7 +145,7 @@ def build_review_graph(deps: Deps, checkpointer=None):
     # 3 -------------------------------------------------------------------------------------------
     def classify_comments(state):
         vcs = deps.vcs(state)
-        diffs = {r: _tail(vcs.diff_against(r, ws.repo(r).base_branch), 40000) for r in state["mrs"]}
+        diffs = {r: _tail(vcs.diff_against(r, f"origin/{ws.repo(r).base_branch}"), 40000) for r in state["mrs"]}
         tr = llm.structured(SYSTEM, (
             f"Ticket {state['ticket_key']}. Unresolved review threads on its draft MRs:\n<threads>{_j(state['threads'])}</threads>\n"
             f"<mr_diffs>{_j(diffs)}</mr_diffs>\n<repos_in_scope>{list(state['scope'])}</repos_in_scope>\n\n"
@@ -273,7 +295,7 @@ def build_review_graph(deps: Deps, checkpointer=None):
     def fix_repo(payload):
         repo, rs = payload["repo"], dict(payload["repo_state"])
         st = {"scope": payload["scope"]}
-        coder, vcs, cap, cfg = deps.coder(st), deps.vcs(st), ws.max_fix_attempts, ws.repo(payload["repo"])
+        coder, vcs, cap, path = deps.coder(st), deps.vcs(st), ws.max_fix_attempts, payload["scope"][payload["repo"]]
         changed, mode = 0, rs["status"]
         feedback = list(rs.get("fix_instructions", []))
         while True:
@@ -285,20 +307,14 @@ def build_review_graph(deps: Deps, checkpointer=None):
                     rs["fix_attempts_used"] = rs.get("fix_attempts_used", 0) + 1
                 upstream = "".join(f"<upstream_repo name='{u}' already_fixed='true'>\n{_tail(_round_diff(vcs, u, b), 15000)}\n</upstream_repo>\n"
                                    for u, b in payload["upstream_base"].items())
-                res = coder.implement(repo, cfg.path, step="targeted_fix", escalate=rs.get("fix_attempts_used", 0) >= cap, instructions=(
+                res = coder.implement(repo, path, step="targeted_fix", escalate=rs.get("fix_attempts_used", 0) >= cap, instructions=(
                     f"Ticket {payload['ticket_key']}: address code review comments on branch {payload['ticket_key']}.\n{upstream}"
                     "<fix_this>\n" + "\n---\n".join(feedback) + "\n</fix_this>\n"
                     "Change only what these comments need. Keep the rest of the branch as it is. Update tests when behaviour changes."))
                 rs["implemented"], changed = True, changed + 1
                 rs["summary"] = res.summary
                 store.audit(payload["payload_run_id"], "fix", {"repo": repo, "attempt": rs.get("fix_attempts_used", 0), "ok": res.ok})
-            ok, results = True, []
-            for name, cmd in cfg.check_commands:
-                r = deps.run_cmd(cmd, cfg.path)
-                results.append({"check": name, "ok": r.returncode == 0, "output": _tail((r.stdout or "") + (r.stderr or ""), 3000)})
-                if r.returncode != 0:
-                    ok = False
-                    break
+            ok, results = run_repo_checks(deps, repo, payload["scope"])
             rs["checks"] = results
             if ok:
                 rs["status"], rs["fix_instructions"] = "ready", []
@@ -336,7 +352,7 @@ def build_review_graph(deps: Deps, checkpointer=None):
         for r in nodes:
             cmd = ws.repo(r).commands.get("integration")
             if cmd:
-                res = deps.run_cmd(cmd, ws.repo(r).path)
+                res = deps.run_cmd(cmd, state["scope"][r], worktrees.env_for(state["scope"]))
                 out = _tail((res.stdout or "") + (res.stderr or ""), 3000)
                 report["commands"].append({"repo": r, "ok": res.returncode == 0, "output": out})
                 if res.returncode != 0:
@@ -358,7 +374,7 @@ def build_review_graph(deps: Deps, checkpointer=None):
 
     # 9 -------------------------------------------------------------------------------------------
     checkpoint("manual_retest", lambda s: {
-        "repos": {r: {"path": ws.repo(r).path, "branch": s["ticket_key"], "changed_files": rs.get("diff_files", []),
+        "repos": {r: {"path": s["scope"][r], "branch": s["ticket_key"], "changed_files": rs.get("diff_files", []),
                       "run": ws.repo(r).commands.get("run", "")} for r, rs in s["repos"].items()},
         "threads_fixed": [{k: i[k] for k in ("n", "repo", "summary")} for i in s["triage"] if i["proposed_action"] == "fix"],
         "hint": "The fixes change behaviour, so test them. Nothing is committed yet. ok = works; feedback = what's wrong."},
@@ -597,5 +613,6 @@ def build_review_graph(deps: Deps, checkpointer=None):
     kit.add_abort()
 
     g.add_edge(START, "preflight")
-    g.add_edge("preflight", "load_mrs")
+    g.add_edge("preflight", "prepare_worktrees")
+    g.add_edge("prepare_worktrees", "load_mrs")
     return g.compile(checkpointer=checkpointer)

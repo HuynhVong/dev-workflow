@@ -5,12 +5,14 @@ and you can swap models per workflow without touching graph code.
 """
 import base64
 import mimetypes
+import time
 from pathlib import Path
 from typing import Protocol, Sequence, TypeVar
 
 import anthropic
 from pydantic import BaseModel
 
+from . import telemetry
 from .config import Settings, settings as default_settings
 from .routing import Routing, skills_system_block
 
@@ -60,6 +62,7 @@ class ClaudeLLM:
         effort = self.routing.effort(model)
         if step:
             system += skills_system_block(self.routing.skills(step))
+        started = time.time()
         response = self.client.beta.messages.parse(
             model=model,
             max_tokens=self.cfg.max_tokens,
@@ -71,6 +74,8 @@ class ClaudeLLM:
             betas=["server-side-fallback-2026-07-01"],
             fallbacks="default",
         )
+        telemetry.record_usage(step or "default", getattr(response, "model", None) or model,
+                               telemetry.usage_dict(getattr(response, "usage", None)), duration_s=time.time() - started)
         if response.stop_reason == "refusal":
             raise LLMRefusal(f"Claude declined this request: {response.stop_details}")
         if response.parsed_output is None:

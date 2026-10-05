@@ -2,6 +2,7 @@
 import re
 import shlex
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
@@ -19,6 +20,8 @@ class VcsError(RuntimeError):
 
 
 Runner = Callable[[list[str], str], subprocess.CompletedProcess]
+# Worktrees of one repo share its config and refs, so parallel runs can briefly collide on git's lock files.
+LOCK_CONTENTION = re.compile(r"could not lock config file|Unable to create '[^']*\.lock'|cannot lock ref|unable to lock", re.I)
 
 
 def default_runner(cmd: list[str], cwd: str) -> subprocess.CompletedProcess:
@@ -40,6 +43,9 @@ def check_policy(tool: str, args: Sequence[str]) -> None:
             raise VcsPolicyError(f"forbidden: git {joined}")
         if a[:1] in (["rebase"], ["filter-branch"], ["clean"]):
             raise VcsPolicyError(f"forbidden: git {joined}")
+        if a[:1] == ["worktree"] and (len(a) < 2 or a[1] not in ("add", "list", "remove")
+                                      or (a[1] == "remove" and any(x in ("-f", "--force") for x in a[2:]))):
+            raise VcsPolicyError(f"forbidden: git {joined} (worktrees are only added, listed, or removed when clean)")
     else:
         if a[:1] in (["ci"], ["pipeline"], ["job"], ["schedule"], ["variable"]):
             raise VcsPolicyError(f"forbidden: this workflow does not touch CI/CD (glab {joined})")
@@ -91,6 +97,11 @@ class Vcs:
         check_policy(tool, args)
         cmd = [*shlex.split(self.prefix), tool, *args] if self.prefix else [tool, *args]
         result = self.runner(cmd, cwd)
+        for attempt in range(1, 8):  # another run held a shared git lock for a moment: wait and retry
+            if tool != "git" or result.returncode == 0 or not LOCK_CONTENTION.search(result.stderr or ""):
+                break
+            time.sleep(0.1 * attempt)
+            result = self.runner(cmd, cwd)
         if check and result.returncode != 0:
             raise VcsError(cmd, result)
         return result
@@ -127,6 +138,26 @@ class Vcs:
 
     def changed_files(self, repo: str) -> list[str]:
         return [l[3:] for l in self.git(repo, "status", "--porcelain").splitlines() if l.strip()]
+
+    def worktrees(self, repo: str) -> list[dict]:
+        """`git worktree list --porcelain` as [{path, head, branch, detached}] (the main clone included)."""
+        out, cur = [], {}
+        for line in self.git(repo, "worktree", "list", "--porcelain").splitlines() + [""]:
+            if not line.strip():
+                if cur:
+                    out.append(cur)
+                cur = {}
+                continue
+            key, _, value = line.partition(" ")
+            if key == "worktree":
+                cur = {"path": value, "head": "", "branch": "", "detached": False}
+            elif key == "HEAD":
+                cur["head"] = value
+            elif key == "branch":
+                cur["branch"] = value.removeprefix("refs/heads/")
+            elif key == "detached":
+                cur["detached"] = True
+        return out
 
     def diff_against(self, repo: str, base: str) -> str:
         """Committed + uncommitted changes relative to the base branch (merge-base)."""

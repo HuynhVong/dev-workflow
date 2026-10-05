@@ -11,6 +11,8 @@ Jira ticket implement (needs workspace.yaml, see workspace.example.yaml):
   devflow answer <run_id> --choice approve [--note "..."] [--repos a,b] [--approve-repos x] [--fix 1,3 --answer-only 2 --skip 4]
   devflow resume <run_id> [--reopen]      devflow abort <run_id> [--note "..."]
   devflow status <run_id>                 devflow show <run_id>          devflow runs
+  devflow worktrees                       devflow worktree-clean <ticket> [--repo api-service]
+  devflow doctor [--json]                 devflow ui [--port 8765] [--no-browser]
 """
 import argparse
 import sys
@@ -84,7 +86,11 @@ def main(argv: list[str] | None = None) -> None:
 
     _add_implement_commands(sub)
     args = p.parse_args(argv)
-    result = args.fn(args)
+    from .jira_implement.runner import RunConflict
+    try:
+        result = args.fn(args)
+    except RunConflict as e:
+        raise SystemExit(str(e)) from None
     if result is not None:
         print(result)
 
@@ -138,15 +144,18 @@ def _add_implement_commands(sub) -> None:
 
     sa = sub.add_parser("answer", help="answer the checkpoint a run is waiting at")
     common(sa)
-    sa.add_argument("--choice", required=True)
+    sa.add_argument("--choice")
     sa.add_argument("--note", default="")
     sa.add_argument("--repos", help="repos for a fix or for manual-test feedback")
     sa.add_argument("--approve-repos", help="out-of-scope repos you approve at clarify")
     sa.add_argument("--fix", help="address-review triage (choice edit): thread numbers to fix")
     sa.add_argument("--answer-only", help="address-review triage (choice edit): thread numbers to answer without code")
     sa.add_argument("--skip", help="address-review triage (choice edit): thread numbers to skip")
+    sa.add_argument("--value", help="answer for a plain interrupt() of another graph (free text)")
 
     def do_answer(a):
+        if a.value is not None:
+            return _session(a).answer(a.run_id, {"value": a.value}) and None
         ans = {"choice": a.choice, "note": a.note}
         if a.repos:
             ans["repos"] = _csv(a.repos)
@@ -175,6 +184,58 @@ def _add_implement_commands(sub) -> None:
     sw = sub.add_parser("show", help="audit log and side-effect ledger of a run")
     common(sw)
     sw.set_defaults(fn=lambda a: json.dumps(_session(a).show(a.run_id), indent=2, default=str))
+
+    sk = sub.add_parser("worktrees", help="every devflow worktree: ticket, repo, branch, uncommitted changes, size")
+    common(sk, run=False)
+
+    def do_worktrees(a):
+        from .jira_implement import worktrees
+        from .jira_implement.runner import load
+        rows = worktrees.list_all(load(a.workspace))
+        return "\n".join(f"{r['ticket']:<12} {r['repo']:<20} {r['branch']:<14} {'dirty' if r['dirty'] else 'clean':<6} "
+                         f"{r['size_bytes'] // 1_000_000:>6} MB  {r['path']}" for r in rows) or "No worktrees."
+    sk.set_defaults(fn=do_worktrees)
+
+    sc = sub.add_parser("worktree-clean", help="remove a finished ticket's clean worktrees (never forced, branches are kept)")
+    sc.add_argument("ticket")
+    sc.add_argument("--repo", help="only this repo")
+    common(sc, run=False)
+
+    def do_clean(a):
+        from .jira_implement import worktrees
+        from .jira_implement.runner import Session, load
+        ws = load(a.workspace)
+        busy = Session(ws).store.active_runs(a.ticket)
+        if busy:
+            raise SystemExit(f"{a.ticket} has an unfinished run {busy[0]['run_id']} ({busy[0]['status']}); finish or abort it first")
+        rows = [r for r in worktrees.list_all(ws) if r["ticket"] == a.ticket and (not a.repo or r["repo"] == a.repo)]
+        return "\n".join(f"removed {worktrees.remove(ws, a.ticket, r['repo'])}" for r in rows) or "Nothing to remove."
+    sc.set_defaults(fn=do_clean)
+
+    sd = sub.add_parser("doctor", help="check every connection: AI key, CLIs, MCP servers, repos, skills")
+    sd.add_argument("--workspace", help="path to workspace.yaml (default: $DEVFLOW_WORKSPACE or ./workspace.yaml)")
+    sd.add_argument("--json", action="store_true")
+
+    def do_doctor(a):
+        from . import doctor
+        from .jira_implement.runner import load
+        checks = doctor.run(load(a.workspace))
+        if a.json:
+            return json.dumps({"checks": [c.to_dict() for c in checks], "summary": doctor.summary(checks)}, indent=2)
+        print(doctor.render(checks))
+        if doctor.summary(checks)["blocking"]:
+            raise SystemExit(1)
+    sd.set_defaults(fn=do_doctor)
+
+    sg = sub.add_parser("ui", help="open the devflow web app (local only)")
+    sg.add_argument("--workspace", help="path to workspace.yaml (default: $DEVFLOW_WORKSPACE or ./workspace.yaml)")
+    sg.add_argument("--port", type=int, default=0, help="default: ui.port in workspace.yaml, else 8765")
+    sg.add_argument("--no-browser", action="store_true")
+
+    def do_ui(a):
+        from .ui.launch import serve
+        serve(a.workspace, port=a.port, open_browser=not a.no_browser)
+    sg.set_defaults(fn=do_ui)
 
     sl = sub.add_parser("runs", help="recent runs")
     common(sl, run=False)

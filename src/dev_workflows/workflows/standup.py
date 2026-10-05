@@ -19,6 +19,28 @@ class Standup(BaseModel):
     blockers: list[str]
 
 
+def _prepare(values: dict, workspace=None) -> tuple[str, dict]:
+    import time
+    names = values.get("repos") or (list(workspace.repos) if workspace else [])
+    paths = [workspace.repos[n].path for n in names if workspace and n in workspace.repos] or list(values.get("repo_paths") or [])
+    return f"Standup {time.strftime('%a %d %b')}", {"repo_paths": paths, "since": values.get("since") or "yesterday",
+                                                   "author": values.get("author") or "", "notes": values.get("notes", "")}
+
+
+DEVFLOW_UI = {
+    "title": "Standup",
+    "description": "Reads your git log across repos plus your notes and writes Yesterday / Today / Blockers.",
+    "icon": "calendar", "color": "#4dd0e1",
+    "steps": ["collect_git", "digest", "render"],
+    "nodes": {"collect_git": "Read git log", "digest": "Summarize", "render": "Write standup"},
+    "form": [{"name": "repos", "label": "Repos", "type": "repos", "help": "Empty means every repo in workspace.yaml."},
+             {"name": "since", "label": "Since", "type": "text", "default": "yesterday"},
+             {"name": "author", "label": "Author", "type": "text", "help": "Defaults to every author; use your git email."},
+             {"name": "notes", "label": "Notes (optional)", "type": "textarea"}],
+    "prepare": _prepare,
+}
+
+
 class State(TypedDict):
     notes: NotRequired[str]  # free text: PRs, tickets, meetings, anything
     repo_paths: NotRequired[list[str]]

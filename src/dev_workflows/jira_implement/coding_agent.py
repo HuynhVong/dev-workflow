@@ -10,9 +10,11 @@ import json
 import os
 import re
 import shlex
+import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from .. import telemetry
 from ..routing import Routing, skills_hint
 from .confluence import is_write_tool
 from .scope import ScopeGuard
@@ -70,6 +72,22 @@ def tool_policy(tool: str, tool_input: dict, roots: list[str], read_only: bool =
             return False, "MCP write tools are not available to the coding agent"
         return True, ""
     return True, ""
+
+
+def describe_tool(tool: str, tool_input: dict, roots: list[str]) -> str:
+    """A one-line, path-relative description of a tool call for the live activity log."""
+    def rel(p: str) -> str:
+        for r in roots:
+            if p.startswith(r + os.sep):
+                return p[len(r) + 1:]
+        return p
+    if tool in FILE_TOOLS:
+        target = tool_input.get(FILE_TOOLS[tool]) or tool_input.get("pattern") or ""
+        extra = f" {tool_input['pattern']}" if tool in ("Glob", "Grep") and tool_input.get("pattern") and target != tool_input.get("pattern") else ""
+        return f"{rel(str(target))}{extra}"[:300]
+    if tool == "Bash":
+        return str(tool_input.get("command", ""))[:300]
+    return json.dumps(tool_input, default=str)[:200]
 
 
 @dataclass
@@ -138,13 +156,13 @@ class ClaudeCodeAgent:
 
     def implement(self, repo: str, path: str, instructions: str, step: str = "implement", escalate: bool = False) -> CodingResult:
         out = self._run([path], f"{RULES}\nRepository: {repo} ({path})\n\n{instructions}", IMPLEMENT_SCHEMA, read_only=False,
-                        step=step, escalate=escalate)
+                        step=step, escalate=escalate, repo=repo)
         return CodingResult(ok=bool(out.get("ok")), summary=out.get("summary", ""), files_changed=out.get("files_changed", []),
                             out_of_scope_needs=out.get("out_of_scope_needs", []), raw=json.dumps(out))
 
     def explore(self, repo: str, path: str, question: str, step: str = "discover_repos") -> CodingResult:
         out = self._run([path], f"{RULES}\nThis step is READ-ONLY: do not edit files.\nRepository: {repo} ({path})\n\n{question}", EXPLORE_SCHEMA,
-                        read_only=True, step=step)
+                        read_only=True, step=step, repo=repo)
         return CodingResult(ok=bool(out.get("confirmed")), summary=out.get("notes", ""), files_changed=out.get("relevant_files", []),
                             out_of_scope_needs=out.get("out_of_scope_needs", []), findings=out, raw=json.dumps(out))
 
@@ -153,8 +171,9 @@ class ClaudeCodeAgent:
         out = self._run(list(repos.values()), f"{RULES}\nThis step verifies behaviour and must NOT edit source files.\nRepositories:\n{listing}\n\n{instructions}", VERIFY_SCHEMA, read_only=True, step=step)
         return CodingResult(ok=bool(out.get("passed")), findings=out, raw=json.dumps(out))
 
-    def _run(self, roots: list[str], prompt: str, schema: dict, read_only: bool, step: str, escalate: bool = False) -> dict:
-        from claude_agent_sdk import ClaudeAgentOptions, HookMatcher, ResultMessage, query
+    def _run(self, roots: list[str], prompt: str, schema: dict, read_only: bool, step: str, escalate: bool = False,
+             repo: str = "") -> dict:
+        from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, HookMatcher, ResultMessage, ToolUseBlock, query
 
         roots = [os.path.realpath(r) for r in roots]
         for r in roots:
@@ -163,10 +182,15 @@ class ClaudeCodeAgent:
         skill_roots = [os.path.realpath(d) for d in self.routing.registry.dirs]
         prompt += skills_hint(self.routing.skills(step, repo_path=roots[0]))
 
+        ctx = telemetry.current()  # the run and node this agent works for (activity and usage are recorded there)
+
         async def pre_tool_use(hook_input, tool_use_id, context):
-            allowed, reason = tool_policy(hook_input["tool_name"], hook_input.get("tool_input") or {}, roots, read_only, skill_roots)
+            tool, tool_input = hook_input["tool_name"], hook_input.get("tool_input") or {}
+            allowed, reason = tool_policy(tool, tool_input, roots, read_only, skill_roots)
             if allowed:
                 return {}
+            telemetry.record_activity({"tool": tool, "detail": describe_tool(tool, tool_input, roots), "denied": True,
+                                       "reason": reason}, ctx=ctx, repo=repo)
             return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}
 
         options = ClaudeAgentOptions(
@@ -177,10 +201,18 @@ class ClaudeCodeAgent:
         )
 
         async def go() -> dict:
-            final = None
+            final, started = None, time.time()
             async for msg in query(prompt=prompt, options=options):
+                if isinstance(msg, AssistantMessage):
+                    for block in msg.content:
+                        if isinstance(block, ToolUseBlock):
+                            telemetry.record_activity({"tool": block.name, "detail": describe_tool(block.name, block.input or {}, roots)},
+                                                      ctx=ctx, repo=repo)
                 if isinstance(msg, ResultMessage):
                     final = msg
+            if final is not None:
+                telemetry.record_usage(step, model, telemetry.usage_dict(final.usage), source="claude_code",
+                                       cost_usd=final.total_cost_usd, duration_s=time.time() - started, ctx=ctx, repo=repo)
             if final is None or final.is_error:
                 raise RuntimeError(f"Claude Code failed: {getattr(final, 'errors', None) or getattr(final, 'result', None)}")
             if isinstance(final.structured_output, dict):

@@ -50,8 +50,14 @@ class ConfluenceReader:
         return self._call("search", {"query": query, "limit": limit})
 
     def missing_tools(self) -> list[str]:
+        return self.tool_report()[0]
+
+    def tool_report(self) -> tuple[list[str], list[str]]:
+        """(read tools this server lacks, Confluence write tools it offers that devflow blocks). Never calls a tool."""
         available = set(self._mcp.list_tools())
-        return sorted(t for t in self._tools.values() if t not in available)
+        missing = sorted(t for t in self._tools.values() if t not in available)
+        blocked = sorted(t for t in available if "confluence" in t.lower() and is_write_tool(t))
+        return missing, blocked
 
 
 PAGE_ID_RE = re.compile(r"/pages/(?:viewpage\.action\?pageId=)?(\d+)|pageId=(\d+)")
