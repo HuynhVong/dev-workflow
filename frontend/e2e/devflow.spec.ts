@@ -115,6 +115,16 @@ test("approvals filter, tokens, worktrees, settings and connections pages render
   await page.getByTestId("recheck").click();
   await expect(page.getByTestId("check-mcp.jira")).toContainText("OK");
   await expect(page.getByTestId("doctor-status")).not.toContainText("not checked");
+
+  // The connections page is taller than the window: only the content scrolls, the sidebar stays full height.
+  await page.setViewportSize({ width: 1440, height: 600 });
+  const content = page.getByTestId("content-scroll");
+  expect(await content.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+  await content.evaluate((el) => el.scrollTo(0, el.scrollHeight));
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  const side = await page.locator("aside").boundingBox();
+  expect(side).toMatchObject({ y: 0, height: 600 });
+  await expect(page.locator("aside").getByLabel("Settings")).toBeInViewport(); // the button at the sidebar's foot
 });
 
 test("a ticket review: checkout, approved test plan, a step that needs you, proof, and the Jira comment", async ({ page }) => {

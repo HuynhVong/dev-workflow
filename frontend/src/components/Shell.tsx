@@ -11,17 +11,19 @@ export function Shell({ children, crumbs, onNewRun }: { children: ReactNode; cru
   const loc = useLocation();
   useEffect(() => setOpen(false), [loc.pathname, loc.search]);
   return (
-    <div className="flex h-full min-h-screen">
+    // The shell is exactly one viewport tall and only the content column scrolls, so the sidebar stays put and
+    // its background always reaches the bottom of the window, however long the page is.
+    <div className="flex h-screen overflow-hidden">
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-40 w-[228px] shrink-0 border-r border-border bg-sidebar transition-transform duration-150 lg:sticky lg:top-0 lg:h-screen lg:translate-x-0",
+          "fixed inset-y-0 left-0 z-40 w-[228px] shrink-0 border-r border-border bg-sidebar transition-transform duration-150 lg:static lg:h-full lg:translate-x-0",
           open ? "translate-x-0" : "-translate-x-full",
         )}
       >
         <Sidebar onNewRun={onNewRun} onClose={() => setOpen(false)} />
       </aside>
       {open ? <div className="fixed inset-0 z-30 bg-black/50 lg:hidden" onClick={() => setOpen(false)} /> : null}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col overflow-y-auto" data-testid="content-scroll">
         <Topbar crumbs={crumbs} onMenu={() => setOpen(true)} />
         <main className="min-w-0 flex-1 px-4 pb-10 pt-6 sm:px-6 lg:px-8">{children}</main>
       </div>
