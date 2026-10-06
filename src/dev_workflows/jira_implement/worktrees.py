@@ -4,12 +4,14 @@
 works in `<worktree_root>/<TICKET>/<repo>`, added from that clone with `rtk git worktree add`. The worktree starts
 detached at a freshly fetched `origin/<base>` (so discovery can read it before any branch exists); `prepare_branches`
 then cuts the ticket branch inside it. A worktree is never removed automatically while it holds work, and its branch is
-never deleted: an aborted run only drops its *clean* worktrees (`release`), and preflight only prunes stale git
+never deleted: a finished (completed or aborted) run only drops its *clean* worktrees (`release`), and preflight only prunes stale git
 bookkeeping and removes an empty leftover folder.
 """
+import fcntl
 import os
 import re
 import shutil
+from contextlib import contextmanager
 from pathlib import Path
 
 from .ledger import Effect, Store, perform
@@ -22,6 +24,20 @@ def source_vcs(ws: Workspace, repos: list[str], runner=None) -> Vcs:
     """A Vcs over the main clones. Used only to fetch and to add or list worktrees."""
     kw = {"runner": runner} if runner else {}
     return Vcs(ScopeGuard.create({r: ws.repos[r].path for r in repos}), prefix=ws.vcs_prefix, **kw)
+
+
+@contextmanager
+def _clone_lock(clone: str):
+    """git rewrites `.git/worktrees` on add/remove and `fetch` reads it: runs on the same repo (threads or processes) take
+    turns on the main clone."""
+    git_dir = Path(clone, ".git")
+    lock = git_dir / "devflow-worktree.lock" if git_dir.is_dir() else Path(clone + ".devflow-worktree.lock")
+    with open(lock, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def _same(a: str, b: str) -> bool:
@@ -56,14 +72,15 @@ def ensure(src: Vcs, ws: Workspace, store: Store, run_id: str, ticket: str, repo
     """Create (or reuse) the run's worktree for one repo and run its one-time setup. Returns the worktree path."""
     path = ws.worktree(ticket, repo)
     cfg = ws.repo(repo)
-    if not any(_same(w["path"], path) for w in src.worktrees(repo)):
-        src.git(repo, "fetch", "origin")
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        if src.local_branch_exists(repo, ticket):
-            src.git(repo, "worktree", "add", path, ticket)  # a resumed ticket or address-review: keep its branch
-        else:
-            src.git(repo, "worktree", "add", "--detach", path, f"origin/{cfg.base_branch}")
-        store.audit(run_id, "worktree_added", {"repo": repo, "path": path})
+    with _clone_lock(cfg.path):
+        if not any(_same(w["path"], path) for w in src.worktrees(repo)):
+            src.git(repo, "fetch", "origin")
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            if src.local_branch_exists(repo, ticket):
+                src.git(repo, "worktree", "add", path, ticket)  # a resumed ticket or address-review: keep its branch
+            else:
+                src.git(repo, "worktree", "add", "--detach", path, f"origin/{cfg.base_branch}")
+            store.audit(run_id, "worktree_added", {"repo": repo, "path": path})
     eff = Effect(run_id, "worktree_setup", repo, f"setup:{path}")
 
     def done():
@@ -124,7 +141,8 @@ def remove(ws: Workspace, ticket: str, repo: str, runner=None) -> str:
     wt = Vcs(ScopeGuard.create({repo: path}), prefix=ws.vcs_prefix, **({"runner": runner} if runner else {}))
     if wt.is_dirty(repo):
         raise RuntimeError(f"{path} has uncommitted changes; commit or discard them by hand first")
-    source_vcs(ws, [repo], runner).git(repo, "worktree", "remove", path)
+    with _clone_lock(ws.repos[repo].path):
+        source_vcs(ws, [repo], runner).git(repo, "worktree", "remove", path)
     parent = Path(path).parent
     if parent.is_dir() and not any(parent.iterdir()):
         parent.rmdir()
@@ -132,7 +150,7 @@ def remove(ws: Workspace, ticket: str, repo: str, runner=None) -> str:
 
 
 def release(ws: Workspace, ticket: str, runner=None) -> dict[str, list[str]]:
-    """Called when a run is aborted: remove this ticket's worktrees that have no uncommitted changes (never forced, the
+    """Called when a run completes or is aborted: remove this ticket's worktrees that have no uncommitted changes (never forced, the
     branches stay). Dirty ones, and anything that cannot be removed, are kept. Returns {"removed": [...], "kept": [...]}."""
     out: dict[str, list[str]] = {"removed": [], "kept": []}
     for w in list_all(ws, runner):

@@ -1,3 +1,4 @@
+from pathlib import Path
 import sqlite3
 
 import pytest
@@ -60,9 +61,10 @@ def test_fix_one_thread_answer_another_then_push_reply_and_refresh_jira(tmp_path
     assert at(out) == "approve_push"
     out = answer(g, cfg, choice="approve")
     assert "completed" in out["output"]
-    web = wt(ws, "web")
-    assert sh("git", "--git-dir", str(tmp_path / "origin/web.git"), "rev-parse", "AQS-1") == sh("git", "-C", web, "rev-parse", "HEAD")
-    assert "AQS-1: address review comments" in sh("git", "-C", web, "log", "-1", "--format=%B")
+    web = ws.repos["web"].path  # the finished run's clean worktree is gone; the branch stays in the main clone
+    assert not Path(wt(ws, "web")).exists()
+    assert sh("git", "--git-dir", str(tmp_path / "origin/web.git"), "rev-parse", "AQS-1") == sh("git", "-C", web, "rev-parse", "AQS-1")
+    assert "AQS-1: address review comments" in sh("git", "-C", web, "log", "-1", "--format=%B", "AQS-1")
     assert sh("git", "--git-dir", str(tmp_path / "origin/api.git"), "rev-parse", "AQS-1") == api_head  # api untouched
     web_reply, api_reply = notes(tmp_path, "web", T_WEB)[-1], notes(tmp_path, "api", T_API)[-1]
     assert "Fixed in web commit" in web_reply["body"] and "<!-- devflow:AQS-1-review:aa11 -->" in web_reply["body"]

@@ -419,6 +419,17 @@ def route_feedback(fa: FeedbackAnalysis, scope: dict, repos: dict, edges: list[t
     return fixes, ask, scope_reqs
 
 
+def release_run_worktrees(deps: Deps, state: dict) -> str:
+    """A run ended (completed or aborted): drop the ticket's clean worktrees and say so. Dirty ones are kept."""
+    try:
+        res = worktrees.release(deps.workspace, state["ticket_key"], deps.vcs_runner)
+    except Exception:  # noqa: BLE001
+        return ""
+    deps.store.audit(state["run_id"], "worktrees_released", res)
+    return (f" Removed clean worktrees: {', '.join(res['removed'])}." if res["removed"] else "") + \
+           (f" Kept (uncommitted changes): {', '.join(res['kept'])}." if res["kept"] else "")
+
+
 def build_graph(deps: Deps, checkpointer=None):
     ws, store, llm = deps.workspace, deps.store, deps.llm
     g = StateGraph(State)
@@ -1123,21 +1134,12 @@ def build_graph(deps: Deps, checkpointer=None):
                 "edit Confluence; the page owner will). Empty if none."), Outdated, step="summary").model_dump()["pages"]
         md = _render_summary(state, outdated)
         store.set_status(state["run_id"], "COMPLETED", node="summary")
-        return {"output": md}
+        return {"output": md + release_run_worktrees(deps, state).replace(" Removed", "\nRemoved", 1)}
 
     node("summary", summary)
     g.add_edge("summary", END)
 
-    def release_worktrees(state):
-        try:
-            res = worktrees.release(deps.workspace, state["ticket_key"], deps.vcs_runner)
-        except Exception:  # noqa: BLE001
-            return ""
-        store.audit(state["run_id"], "worktrees_released", res)
-        return (f" Removed clean worktrees: {', '.join(res['removed'])}." if res["removed"] else "") + \
-               (f" Kept (uncommitted changes): {', '.join(res['kept'])}." if res["kept"] else "")
-
-    kit.add_abort(release_worktrees)
+    kit.add_abort(lambda state: release_run_worktrees(deps, state))
 
     g.add_edge(START, "preflight")
     g.add_edge("preflight", "prepare_worktrees")
