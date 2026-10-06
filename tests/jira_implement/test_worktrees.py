@@ -124,7 +124,8 @@ def test_one_unfinished_run_per_ticket(tmp_path):
 def test_worktree_policy_and_cleanup(tmp_path):
     check_policy("git", ["worktree", "add", "/x", "AQS-1"])
     check_policy("git", ["worktree", "list", "--porcelain"])
-    for bad in (["worktree", "remove", "--force", "/x"], ["worktree", "prune"], ["worktree", "move", "/a", "/b"]):
+    check_policy("git", ["worktree", "prune"])
+    for bad in (["worktree", "remove", "--force", "/x"], ["worktree", "move", "/a", "/b"]):
         with pytest.raises(VcsPolicyError):
             check_policy("git", bad)
 
@@ -141,3 +142,26 @@ def test_worktree_policy_and_cleanup(tmp_path):
     worktrees.remove(ws, "AQS-1", "api", runner)
     assert not Path(wt(ws, "api")).exists()
     assert sh("git", "-C", ws.repos["api"].path, "branch", "--list", "AQS-1")  # the branch is kept
+
+
+def test_preflight_prunes_stale_worktrees_and_removes_an_empty_leftover_folder(tmp_path):
+    ws, env = make_env(tmp_path, repos=("api",))
+    deps, _, _ = make_deps(tmp_path, ws, env, FakeLLM(["api"], []), FakeCoder())
+    g = graph(tmp_path, deps)
+    assert drive(g, deps, "AQS-1", [])["__interrupt__"][0].value["name"] == "approve_plan"
+    path = wt(ws, "api")
+    import shutil
+    shutil.rmtree(path)  # git still lists it (stale), as after a hand-deleted folder
+    Path(path).mkdir()   # and an empty folder is left in its place
+    assert worktrees.gaps(deps.source_vcs(["api"]), ws, "AQS-1", ["api"]) == []
+    assert not Path(path).exists()
+
+
+def test_release_removes_clean_worktrees_and_keeps_dirty_ones(tmp_path):
+    ws, env = make_env(tmp_path)
+    deps, _, _ = make_deps(tmp_path, ws, env, FakeLLM(["api", "web"], [("api", "web")]), FakeCoder())
+    drive(graph(tmp_path, deps), deps, "AQS-1", [])
+    Path(wt(ws, "web"), "wip.txt").write_text("unsaved")
+    res = worktrees.release(ws, "AQS-1", deps.vcs_runner)
+    assert res["removed"] == [wt(ws, "api")] and res["kept"] == [wt(ws, "web")]
+    assert not Path(wt(ws, "api")).exists() and Path(wt(ws, "web", )).exists()

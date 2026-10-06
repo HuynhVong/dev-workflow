@@ -203,8 +203,10 @@ or switches it, so it can have work in progress. Every ticket works in its own w
 - `setup_commands` (e.g. `npm ci`) and `copy_files` (e.g. `.env.local`) per repo prepare a fresh worktree once.
 - Check commands get `DEVFLOW_WORKTREE_<REPO>` pointing at the run's sibling worktrees. A repo with
   `parallel_checks: false` (fixed ports, a shared local database) runs its checks one ticket at a time.
-- Worktrees are never removed automatically: `devflow worktrees` lists them, `devflow worktree-clean AQS-5512`
-  removes a finished ticket's clean worktrees (never forced; the branch stays).
+- Worktrees holding work are never removed automatically: `devflow worktrees` lists them, `devflow worktree-clean AQS-5512`
+  removes a finished ticket's clean worktrees (never forced; the branch stays). Aborting a run removes its *clean*
+  worktrees the same way and keeps any with uncommitted changes. Preflight prunes stale git worktree entries and
+  deletes an empty leftover folder at the worktree path; a non-empty foreign folder still has to be moved by hand.
 
 ### Ticket review
 

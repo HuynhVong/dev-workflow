@@ -19,6 +19,7 @@ from ..routing import Routing
 from .confluence import ConfluenceReader
 from .address_review import WORKFLOW as REVIEW_WORKFLOW
 from .address_review import build_review_graph
+from . import worktrees
 from .graph import WORKFLOW, Deps, PreflightFailed, build_graph
 from .jira import JiraGateway
 from .ledger import Store
@@ -192,6 +193,11 @@ class Session:
             return self.drive(run_id, Command(resume={"choice": "abort", "note": note}))
         if run["status"] in ("FAILED", "PENDING", "WAITING_HUMAN") or (run["status"] == "RUNNING" and run["stale"]):
             self.store.set_status(run_id, "ABORTED", node=run["node"], checkpoint=run["checkpoint"], detail=note or "aborted")
+            if run["ticket"] and not self.store.active_runs(run["ticket"]):
+                try:
+                    self.store.audit(run_id, "worktrees_released", worktrees.release(self.ws, run["ticket"]))
+                except Exception:  # noqa: BLE001
+                    pass
             return self._done(run_id, "ABORTED (no further steps will run)")
         return self._done(run_id, f"cannot be aborted while {run['status']}")
 

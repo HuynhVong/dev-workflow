@@ -3,7 +3,9 @@
 `repos[].path` in workspace.yaml is the developer's normal clone. devflow never edits or switches it: each ticket
 works in `<worktree_root>/<TICKET>/<repo>`, added from that clone with `rtk git worktree add`. The worktree starts
 detached at a freshly fetched `origin/<base>` (so discovery can read it before any branch exists); `prepare_branches`
-then cuts the ticket branch inside it. A worktree is never removed automatically, and its branch is never deleted.
+then cuts the ticket branch inside it. A worktree is never removed automatically while it holds work, and its branch is
+never deleted: an aborted run only drops its *clean* worktrees (`release`), and preflight only prunes stale git
+bookkeeping and removes an empty leftover folder.
 """
 import os
 import re
@@ -33,11 +35,14 @@ def gaps(src: Vcs, ws: Workspace, ticket: str, repos: list[str]) -> list[str]:
     for repo in repos:
         path = ws.worktree(ticket, repo)
         try:
+            src.git(repo, "worktree", "prune")  # forget worktrees whose folder is gone
             listed = src.worktrees(repo)
         except Exception as e:  # noqa: BLE001
             out.append(f"{repo}: cannot list worktrees: {e}")
             continue
         mine = any(_same(w["path"], path) for w in listed)
+        if Path(path).is_dir() and not mine and not any(Path(path).iterdir()):
+            Path(path).rmdir()  # an empty leftover folder holds nothing: let `worktree add` use the path
         if Path(path).exists() and not mine:
             out.append(f"{repo}: {path} exists but is not a worktree of {repo}; move it away first")
         for w in listed:
@@ -124,6 +129,23 @@ def remove(ws: Workspace, ticket: str, repo: str, runner=None) -> str:
     if parent.is_dir() and not any(parent.iterdir()):
         parent.rmdir()
     return path
+
+
+def release(ws: Workspace, ticket: str, runner=None) -> dict[str, list[str]]:
+    """Called when a run is aborted: remove this ticket's worktrees that have no uncommitted changes (never forced, the
+    branches stay). Dirty ones, and anything that cannot be removed, are kept. Returns {"removed": [...], "kept": [...]}."""
+    out: dict[str, list[str]] = {"removed": [], "kept": []}
+    for w in list_all(ws, runner):
+        if w["ticket"] != ticket:
+            continue
+        if w["dirty"] is False:
+            try:
+                out["removed"].append(remove(ws, ticket, w["repo"], runner))
+                continue
+            except Exception:  # noqa: BLE001
+                pass
+        out["kept"].append(w["path"])
+    return out
 
 
 def _size(path: Path) -> int:
