@@ -1,6 +1,6 @@
 // Small shadcn-style building blocks in the reference look: 1px borders, soft-tinted status colours, 150ms transitions.
-import { X } from "lucide-react";
-import { forwardRef, useEffect, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
+import { Copy, X } from "lucide-react";
+import { forwardRef, useEffect, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
 import type { Status } from "@/lib/api";
 import { cn } from "@/lib/format";
 
@@ -252,6 +252,36 @@ export function ErrorNote({ error }: { error: unknown }) {
   if (!error) return null;
   const msg = error instanceof Error ? error.message : String(error);
   return <div className="rounded-lg border border-destructive/40 bg-destructive-soft px-3 py-2 text-xs text-destructive">{msg}</div>;
+}
+
+/** A failure's whole message: clamped to a few lines until expanded, always copyable. */
+export function FailureDetail({ text, title = "Why it failed" }: { text: string; title?: string }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  if (!text) return null;
+  const long = text.length > 240 || text.split("\n").length > 3;
+  return (
+    <div className="rounded-lg border border-destructive/40 bg-destructive-soft px-3 py-2 text-xs text-destructive" data-testid="failure-detail">
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <span className="font-medium">{title}</span>
+        <span className="flex items-center gap-3">
+          {long ? (
+            <button type="button" className="underline-offset-2 hover:underline" onClick={() => setOpen(!open)} data-testid="failure-toggle">
+              {open ? "Collapse" : "Show full error"}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 underline-offset-2 hover:underline"
+            onClick={() => navigator.clipboard?.writeText(text).then(() => (setCopied(true), window.setTimeout(() => setCopied(false), 1200)))}
+          >
+            <Copy className="size-3" /> {copied ? "Copied" : "Copy"}
+          </button>
+        </span>
+      </div>
+      <pre className={cn("whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed", open || !long ? "max-h-[420px] overflow-auto" : "line-clamp-3")}>{text}</pre>
+    </div>
+  );
 }
 
 export function Spinner({ className }: { className?: string }) {

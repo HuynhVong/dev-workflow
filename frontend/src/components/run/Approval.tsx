@@ -148,7 +148,7 @@ export function AbortDialog({ open, onClose, onConfirm, pending, error, runId }:
 }
 
 const LABELS: Record<string, Record<string, string>> = {
-  _: { approve: "Approve & continue", ok: "It works", feedback: "Send feedback", revise: "Revise", proceed: "Proceed without answers", deny: "Deny", retry: "Retry", reuse: "Reuse branches", fixed_by_hand: "Fixed by hand, re-run checks", answer: "Answer", fix: "Fix", skip: "Skip", edit: "Apply my triage" },
+  _: { approve: "Approve & continue", ok: "It works", feedback: "Report problem, fix it now", revise: "Revise", proceed: "Proceed without answers", deny: "Deny", retry: "Retry", reuse: "Reuse branches", fixed_by_hand: "Fixed by hand, re-run checks", answer: "Answer", fix: "Fix", skip: "Skip", edit: "Apply my triage" },
   clarify: { answer: "Send answers" },
   approve_push: { approve: "Approve push" },
   route_ask: { answer: "Answer", fix: "Fix in repos", skip: "Skip these items" },
@@ -177,8 +177,9 @@ const NOTE_HINT: Record<string, string> = {
 
 const BLOCKED: Record<string, (o: string, p: Record<string, any>, note: string, extra: Answer) => string | null> = {
   approve_plan: (o, p, note) => (o === "approve" && p.validation_errors?.length ? "The plan has validation errors; revise it" : o === "revise" && !note.trim() ? "Say what to change in the note" : null),
-  manual_test: (o, _p, note) => (o === "feedback" && !note.trim() ? "Describe what is wrong in the note" : null),
-  manual_retest: (o, _p, note) => (o === "feedback" && !note.trim() ? "Describe what is wrong in the note" : null),
+  manual_test: (o, _p, note, extra) => (o === "feedback" && !note.trim() && !String(extra.note ?? "").trim() ? "Describe the failed case or the change you want" : null),
+  manual_retest: (o, _p, note, extra) => (o === "feedback" && !note.trim() && !String(extra.note ?? "").trim() ? "Describe the failed case or the change you want" : null),
+  human_step: (o, _p, note) => (o === "fail" && !note.trim() ? "Say what failed in the note" : null),
   route_ask: (o, _p, note, extra) => (o === "answer" && !note.trim() ? "Write the answer in the note" : o === "fix" && !(extra.repos as string[] | undefined)?.length ? "Pick the repos to fix" : null),
   triage: (o, _p, _note, extra) => (o === "approve" && extra._edited ? "You changed some actions: use Apply my triage" : o === "edit" && !extra._edited ? "Change an action in the table first" : null),
   clarify: (o, _p, note, extra) => (o === "answer" && !note.trim() && !(extra.note as string) ? "Answer at least one question" : null),
@@ -500,6 +501,15 @@ function ManualTest({ p, run, extra, setExtra }: FormProps) {
           <JsonTree value={p.integration} open={1} />
         </Section>
       ) : null}
+      <Section title="Something failed or needs changing? Describe it here">
+        <Textarea
+          value={String(extra.note ?? "")}
+          onChange={(e) => setExtra({ ...extra, note: e.target.value || undefined })}
+          rows={5}
+          placeholder={"Which case failed, what you did, what you expected and what happened.\nAny other change you want made now is welcome too.\nThen press “Report problem, fix it now”: devflow fixes it and asks you to test again."}
+          data-testid="manual-feedback"
+        />
+      </Section>
       <RepoPicker label="Repos the feedback is about (if you know)" repos={repos.map(([n]) => n).length ? repos.map(([n]) => n) : Object.keys(run.scope ?? {})} value={(extra.repos as string[]) ?? []} onChange={(r) => setExtra({ ...extra, repos: r })} />
     </>
   );
@@ -514,7 +524,7 @@ function PushView({ p }: { p: Record<string, any> }) {
             Commit and push each repo's branch (never forced), in this order: <Mono className="text-foreground">{(p.merge_order ?? []).join(" → ")}</Mono>
           </li>
           <li>Open a draft MR per repo targeting develop (never merged by devflow)</li>
-          <li>Move the Jira ticket to Code Review and add one delivery comment</li>
+          <li>Add one delivery comment to the Jira ticket (devflow never changes its status: you move it)</li>
           <li>Manual test: {p.manual_test}</li>
         </ul>
       </Section>
