@@ -275,6 +275,6 @@ def test_jira_server_comes_from_claude_code_when_workspace_has_none(tmp_path):
                                                                              "headers": {"Authorization": "Bearer t"}}}}}}))
     assert set(claude_code_mcp_servers([cc])) == {"github", "my-jira"}
     name, config, source = resolve_jira_server(ws, files=[cc])
-    assert name == "my-jira" and config == {"url": "https://mcp.acme.io/jira", "headers": {"Authorization": "Bearer t"}}
+    assert name == "my-jira" and config == {"type": "http", "url": "https://mcp.acme.io/jira", "headers": {"Authorization": "Bearer t"}}
     assert source == str(cc)
     assert resolve_jira_server(ws, files=[tmp_path / "missing.json"]) is None
