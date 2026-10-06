@@ -54,7 +54,7 @@ def test_happy_path_two_repos_in_dependency_order(tmp_path):
     db = glab_db(tmp_path)
     assert all(m["draft"] for r in db for m in db[r]) and set(db) == {"api", "web"}
     assert "Merge order:** api → web" in db["web"][0]["description"] and "merge_requests/1" in db["web"][0]["description"]
-    assert mcp.status == "Code Review" and len(mcp.comments) == 1
+    assert mcp.status == "In Progress" and len(mcp.comments) == 1  # never transitioned: the developer moves it
     assert store.run("AQS-1-run")["status"] == "COMPLETED"
     origin_head = sh("git", "--git-dir", str(tmp_path / "origin/api.git"), "rev-parse", "AQS-1")
     main = ws.repos["api"].path  # the finished run's clean worktrees are gone; the branch stays in the main clone
@@ -149,7 +149,7 @@ def test_resume_after_crash_does_not_duplicate_mrs_or_comments(tmp_path):
     out = g.invoke(None, cfg)  # devflow resume
     assert "completed" in out["output"]
     assert len(mcp.comments) == 1 and len(glab_db(tmp_path)["api"]) == 1
-    assert sum(1 for c in mcp.calls if c[0] == "jira_transition_issue") == 1
+    assert not any(c[0] == "jira_transition_issue" for c in mcp.calls)  # the developer moves the ticket
 
 
 def test_branch_from_another_run_needs_your_approval(tmp_path):

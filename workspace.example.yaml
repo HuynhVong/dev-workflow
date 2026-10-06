@@ -76,7 +76,8 @@ jira_user: you@acme.io              # warns if the ticket is assigned to someone
 #   batch_changelogs: jira_batch_get_changelogs   (optional) the standup's fallback when get_issue returns no changelog
 # confluence_tools: {get_page: confluence_get_page, search: confluence_search, ...}
 
-status_order: [To Do, In Progress, Code Review]   # Jira status only ever moves forward
+# Devflow never transitions a Jira ticket (you move it). These are only used to read a ticket's position.
+status_order: [To Do, In Progress, Code Review]
 review_status: Code Review
 vcs_prefix: rtk                     # every git/glab call is `rtk git ...` / `rtk glab ...`
 state_dir: .devflow                 # SQLite checkpoints, audit log and side-effect ledger

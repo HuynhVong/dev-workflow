@@ -1112,11 +1112,9 @@ def build_graph(deps: Deps, checkpointer=None):
             + ["", "Local verification: checks passed in every repo"
                + (", integration/E2E passed" if state.get("integration_version") == state.get("code_version") else "")
                + ", manual test passed by the developer."])
-        transition = perform(store, Effect(run_id, "jira_update", key, f"transition:{ws.review_status}"),
-                             detect=lambda: None, act=lambda: deps.jira.transition_if_behind(key, ws.review_status))
         comment = perform(store, Effect(run_id, "jira_update", key, "delivery_comment"),
                           detect=lambda: None, act=lambda: deps.jira.upsert_comment(key, mark, body))
-        return {"jira_result": {"transition": transition["result"], "comment": comment["result"]}}
+        return {"jira_result": {"comment": comment["result"]}}  # the ticket's status is never changed: the developer moves it
 
     node("jira_update", jira_update, retry_policy=TRANSIENT)
     g.add_edge("jira_update", "summary")
@@ -1164,5 +1162,6 @@ def _render_summary(state, outdated: list[dict]) -> str:
         lines += ["", "## Confluence pages that look out of date (for the page owner; the workflow never edits Confluence)"]
         lines += [f"- {p['page']}: {p['reason']}" for p in outdated]
     jr = state.get("jira_result") or {}
-    lines += ["", f"Jira: {jr.get('transition', '')}; delivery comment {jr.get('comment', {}) if isinstance(jr.get('comment'), str) else 'updated'}"]
+    lines += ["", f"Jira: delivery comment {jr.get('comment', {}) if isinstance(jr.get('comment'), str) else 'updated'}; "
+                  "the ticket status is unchanged, move it yourself when you are ready"]
     return "\n".join(lines) + "\n"

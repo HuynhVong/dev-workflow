@@ -113,14 +113,23 @@ def env_for(scope: dict[str, str]) -> dict[str, str]:
     return {"DEVFLOW_WORKTREE_" + re.sub(r"[^A-Za-z0-9]", "_", r).upper(): p for r, p in scope.items()}
 
 
-def list_all(ws: Workspace, runner=None) -> list[dict]:
-    """Every devflow worktree on disk: ticket, repo, branch, uncommitted changes, size (for the Worktrees page)."""
+def _subdirs(path: Path) -> list[Path]:
+    """Sorted subfolders; a folder another run removes meanwhile just yields nothing."""
+    try:
+        return sorted(p for p in path.iterdir() if p.is_dir())
+    except OSError:
+        return []
+
+
+def list_all(ws: Workspace, runner=None, ticket: str | None = None) -> list[dict]:
+    """Every devflow worktree on disk (or just one ticket's): ticket, repo, branch, uncommitted changes, size (for the
+    Worktrees page)."""
     root = Path(ws.worktree_root)
     out = []
     if not root.is_dir():
         return out
-    for ticket_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-        for repo_dir in sorted(p for p in ticket_dir.iterdir() if p.is_dir()):
+    for ticket_dir in ([root / ticket] if ticket else _subdirs(root)):
+        for repo_dir in _subdirs(ticket_dir):
             repo = repo_dir.name
             item = {"ticket": ticket_dir.name, "repo": repo, "path": str(repo_dir), "branch": "", "dirty": None,
                     "size_bytes": _size(repo_dir), "known_repo": repo in ws.repos}
@@ -153,15 +162,13 @@ def release(ws: Workspace, ticket: str, runner=None) -> dict[str, list[str]]:
     """Called when a run completes or is aborted: remove this ticket's worktrees that have no uncommitted changes (never forced, the
     branches stay). Dirty ones, and anything that cannot be removed, are kept. Returns {"removed": [...], "kept": [...]}."""
     out: dict[str, list[str]] = {"removed": [], "kept": []}
-    for w in list_all(ws, runner):
-        if w["ticket"] != ticket:
-            continue
+    for w in list_all(ws, runner, ticket):
         if w["dirty"] is False:
             try:
                 out["removed"].append(remove(ws, ticket, w["repo"], runner))
                 continue
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001
+                out.setdefault("errors", []).append(f"{w['path']}: {e}")
         out["kept"].append(w["path"])
     return out
 

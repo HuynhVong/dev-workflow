@@ -382,7 +382,7 @@ built from the payload it already sends:
 | `budget_exhausted` | repo, attempts used (3 of 3), last failure; Fixed by hand (re-run checks) / Abort |
 | `manual_test` | per repo: what changed, how to run it, what to test; OK / Feedback (text, optional screenshot paths) / Abort |
 | `route_ask` | the feedback items the router could not place, with a repo picker per item |
-| `approve_push` | exactly what will happen: per repo branch, commits, draft MR target `develop`, merge order, scope gaps, Jira transition; Approve / Abort |
+| `approve_push` | exactly what will happen: per repo branch, commits, draft MR target `develop`, merge order, scope gaps, the Jira delivery comment (the ticket status is never changed); Approve / Abort |
 | `push_blocked` | the push problems and the "never force-push" hint; Retry / Abort |
 | address-review `triage` | table of review threads, a Fix / Answer only / Skip toggle per row, with the comment and file shown |
 | `manual_retest` | as `manual_test` |
