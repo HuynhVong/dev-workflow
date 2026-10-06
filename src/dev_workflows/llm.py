@@ -88,6 +88,12 @@ class ClaudeLLM:
         return response.parsed_output
 
 
+# A structured call needs no MCP server and no skill listing. Without these flags Claude Code sends the definitions of
+# every MCP tool the developer has installed with every call (`--tools ""` only drops the built-in tools), which can be
+# tens of thousands of tokens per call.
+NO_EXTRAS = ("--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--disable-slash-commands")
+
+
 class ClaudeCliLLM:
     """Runs each structured call through headless Claude Code (`claude -p --json-schema`), so the AI steps use the
     developer's Claude Pro/Max login instead of a paid API key. Same models, effort and skills as ClaudeLLM."""
@@ -109,7 +115,7 @@ class ClaudeCliLLM:
             prompt += "\n\nRead these images with the Read tool before answering:\n" + "\n".join(f"- {p}" for p in images)
         cmd = [self.binary, "-p", "--output-format", "json", "--json-schema", json.dumps(schema.model_json_schema()),
                "--model", model, "--system-prompt", system, "--tools", "Read" if images else "",
-               "--no-session-persistence", *(["--effort", effort] if effort else [])]
+               "--no-session-persistence", *NO_EXTRAS, *(["--effort", effort] if effort else [])]
         if images:
             cmd += ["--allowedTools", "Read", "--add-dir", *sorted({str(Path(p).parent) for p in images})]
         # Without the key Claude Code falls back to the logged-in Claude subscription, which is the point of this backend.

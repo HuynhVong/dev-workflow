@@ -10,6 +10,7 @@ import fcntl
 import json
 import operator
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -25,7 +26,7 @@ from ..routing import Routing
 from . import dag as dagmod
 from . import worktrees
 from .coding_agent import ClaudeCodeAgent, CodingAgent
-from .confluence import ConfluenceReader, page_ids_from_urls
+from .confluence import ConfluenceReader, compact_pages, page_ids_from_urls
 from .jira import JiraGateway, marker
 from .ledger import Effect, Store, perform
 from .mcp_client import TransientToolError
@@ -174,8 +175,13 @@ class Deps:
         if self.coder_factory:
             return self.coder_factory(scope)
         sql, upstream = sql_servers(self.workspace)
-        return ClaudeCodeAgent(scope, routing=self.routing, mcp_servers={**playwright_servers(self.workspace), **sql},
-                               sql_upstream=upstream)
+        playwright = playwright_servers(self.workspace)
+        return ClaudeCodeAgent(scope, routing=self.routing, mcp_servers={**playwright, **sql},
+                               sql_upstream=upstream, strict_mcp=self._strict_mcp(playwright))
+
+    def _strict_mcp(self, playwright: dict) -> bool:
+        """An account-level Playwright server has no config to pass, so the agent has to inherit Claude Code's own."""
+        return bool(playwright) or not self.workspace.claude_code_mcp.get("playwright")
 
     def e2e_agent(self, state: dict, evidence_dir: str, profile_dir: str) -> CodingAgent:
         """A Claude Code agent whose Playwright MCP saves screenshots in `evidence_dir` and keeps its browser profile
@@ -185,7 +191,8 @@ class Deps:
             return self.coder_factory(scope)
         playwright = {k: playwright_config(v, evidence_dir, profile_dir) for k, v in playwright_servers(self.workspace).items()}
         sql, upstream = sql_servers(self.workspace)
-        return ClaudeCodeAgent(scope, routing=self.routing, mcp_servers={**playwright, **sql}, sql_upstream=upstream)
+        return ClaudeCodeAgent(scope, routing=self.routing, mcp_servers={**playwright, **sql}, sql_upstream=upstream,
+                               strict_mcp=self._strict_mcp(playwright))
 
     def run_cmd(self, cmd: str, cwd: str, env: dict | None = None) -> subprocess.CompletedProcess:
         """`env` adds variables (e.g. DEVFLOW_WORKTREE_<REPO>) on top of the current environment."""
@@ -231,11 +238,38 @@ def playwright_config(cfg: dict, output_dir: str, profile_dir: str) -> dict:
 
 
 def _j(obj: Any) -> str:
-    return json.dumps(obj, indent=2, default=str)
+    """Compact JSON for prompts: indentation costs tokens and tells the model nothing."""
+    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False, default=str)
 
 
 def _tail(text: str, n: int = 4000) -> str:
     return text if len(text) <= n else "…" + text[-n:]
+
+
+def diff_digest(diff: str, n: int = 15000) -> str:
+    """A diff that fits in `n` chars: whole when it does, else the list of changed files with their +/- line counts,
+    then whole file sections in order while they fit, then the names of the files left out."""
+    if len(diff) <= n:
+        return diff
+    sections = [s for s in re.split(r"(?m)^(?=diff --git )", diff) if s.strip()]
+    def name(sec: str) -> str:
+        m = re.match(r"diff --git a/(\S+)", sec)
+        return m.group(1) if m else sec.splitlines()[0][:100]
+    def counts(sec: str) -> str:
+        lines = sec.splitlines()
+        add = sum(1 for x in lines if x.startswith("+") and not x.startswith("+++"))
+        rem = sum(1 for x in lines if x.startswith("-") and not x.startswith("---"))
+        return f"+{add}/-{rem}"
+    head = "Changed files:\n" + "\n".join(f"  {name(x)} {counts(x)}" for x in sections) + "\n\n"
+    out, left, budget = [], [], n - len(head)
+    for sec in sections:
+        if len(sec) <= budget:
+            out.append(sec)
+            budget -= len(sec)
+        else:
+            left.append(name(sec))
+    note = f"\n(diff of {', '.join(left)} left out to save space; read those files if they matter)\n" if left else ""
+    return head + "".join(out) + note
 
 
 class GraphKit:
@@ -429,7 +463,7 @@ def build_graph(deps: Deps, checkpointer=None):
                 mrs[repo] = out[:2000]
         prompt = (
             f"<ticket key='{t['key']}'>\n<title>{t['title']}</title>\n<description>\n{t['description']}\n</description>\n</ticket>\n"
-            f"<confluence linked_from_ticket='{confirmed}'>\n{_tail(_j(pages), 120000)}\n</confluence>\n\n"
+            f"<confluence linked_from_ticket='{confirmed}'>\n{_tail(_j(compact_pages(pages)), 30000)}\n</confluence>\n\n"
             "Extract (a) the detailed requirement and (b) the current related business. Cite the page title and "
             "section for every point. List conflicts between Confluence and the Jira text. "
             + ("" if confirmed else "These pages were found by search, not linked: mark every page confirmed=false.")

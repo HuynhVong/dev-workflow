@@ -185,8 +185,11 @@ SQL_RULES = (
 
 class ClaudeCodeAgent:
     def __init__(self, scope: ScopeGuard, routing: Routing | None = None, mcp_servers: dict | None = None, max_turns: int = 200,
-                 sql_upstream: str = ""):
+                 sql_upstream: str = "", strict_mcp: bool = True):
         self.scope, self.routing, self.mcp_servers, self.max_turns = scope, routing or Routing(), mcp_servers or {}, max_turns
+        # Only `mcp_servers` are loaded, not every server in the developer's Claude Code config: each loaded server's
+        # tool definitions ride along on every turn. False when a server the agent needs has no local config to pass.
+        self.strict_mcp = strict_mcp
         self.sql_upstream = sql_upstream  # the MySQL MCP behind devflow-sql: its own tools are denied to the agent
 
     def implement(self, repo: str, path: str, instructions: str, step: str = "implement", escalate: bool = False) -> CodingResult:
@@ -256,6 +259,7 @@ class ClaudeCodeAgent:
             permission_mode="acceptEdits", setting_sources=["user", "project"], mcp_servers=self.mcp_servers,
             hooks=hooks,
             output_format={"type": "json_schema", "schema": schema},
+            extra_args={"strict-mcp-config": None} if self.strict_mcp else {},
         )
 
         async def go() -> dict:

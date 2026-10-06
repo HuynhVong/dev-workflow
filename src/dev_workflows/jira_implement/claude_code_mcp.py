@@ -19,6 +19,7 @@ import tempfile
 import time
 from typing import Any, Callable
 
+from .. import telemetry
 from .confluence import is_write_tool
 from .mcp_client import TransientToolError
 
@@ -56,6 +57,8 @@ HELPERS = {"getaccessibleatlassianresources", "atlassianuserinfo"}
 # Operations that may quietly do nothing when the server has no tool for them (the caller copes with no result).
 SKIPPABLE = {"download_attachments"}
 DEFAULT_MODEL = "haiku"
+# Replaces Claude Code's own (much longer) system prompt: these calls only make one tool call.
+SYSTEM_PROMPT = "You make exactly the MCP tool call you are asked for, with the arguments given, then reply DONE."
 
 
 def _norm(name: str) -> str:
@@ -150,6 +153,7 @@ class ClaudeCodeMcp:
         self.server, self.tools, self.equivalents, self.read_only = server, dict(tools), equivalents, read_only
         self._run, self._init, self.binary, self.model, self.timeout_s = run, init, binary, model, timeout_s
         self._info: dict | None = None
+        self._others: list[str] = []  # Claude Code's other MCP servers, kept out of every call
         self._context: dict[str, str] = {}  # helper results (e.g. the cloudId list), reused so later calls skip them
         self.name = f"Claude Code: {server}"
 
@@ -162,6 +166,7 @@ class ClaudeCodeMcp:
                 raise RuntimeError(f"Claude Code has no MCP server named '{self.server}' (it has: {known}); "
                                    "fix claude_code_mcp in workspace.yaml or run `devflow setup` again")
             self._info = servers[self.server]
+            self._others = sorted(n for n in servers if n != self.server)
         return self._info
 
     def status(self) -> str:
@@ -212,7 +217,9 @@ class ClaudeCodeMcp:
             "Call no other tool. After it returns, reply with just DONE."
         )
         cmd = [self.binary, "-p", "--output-format", "stream-json", "--verbose", "--model", self.model, "--tools", "",
-               "--allowedTools", *allowed, "--no-session-persistence"]
+               "--allowedTools", *allowed, "--no-session-persistence", "--system-prompt", SYSTEM_PROMPT,
+               "--disable-slash-commands", *self._hidden(allowed)]
+        started = time.time()
         for _ in range(2):  # the server can still be connecting when the model starts: then it is not called
             with tempfile.TemporaryDirectory(prefix="devflow-mcp-") as cwd:
                 try:
@@ -223,6 +230,8 @@ class ClaudeCodeMcp:
                 seen = tool_result(proc.stdout or "", tool_prefix(self.server) + helper)
                 if seen and not seen[1]:
                     self._context[helper] = _unwrap(seen[0])
+            _record_usage(proc.stdout or "", f"mcp.{op}", self.model, started)
+            started = time.time()
             result = tool_result(proc.stdout or "", tool_prefix(self.server) + real)
             if result is not None:
                 break
@@ -237,6 +246,29 @@ class ClaudeCodeMcp:
             return json.loads(text)
         except (json.JSONDecodeError, TypeError):
             return text
+
+    def _hidden(self, allowed: list[str]) -> list[str]:
+        """--disallowedTools for every MCP tool this call doesn't need: the other servers whole, and this server's
+        other tools. Claude Code otherwise sends all their definitions with the call (`--allowedTools` only sets
+        permissions), which can be tens of thousands of tokens."""
+        prefix = tool_prefix(self.server)
+        hide = [tool_prefix(s)[:-2] for s in self._others]
+        hide += [prefix + t for t in self.info()["tools"] if prefix + t not in allowed]
+        return ["--disallowedTools", *hide] if hide else []
+
+
+def _record_usage(stream: str, step: str, model: str, started: float) -> None:
+    """The call's tokens from the stream's result event, so Jira/Confluence calls show on the Tokens page."""
+    for line in reversed(stream.splitlines()):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") == "result":
+            used = next(iter(event.get("modelUsage") or {}), None) or model
+            telemetry.record_usage(step, used, telemetry.usage_dict(event.get("usage")), source="claude_code_mcp",
+                                   cost_usd=event.get("total_cost_usd"), duration_s=time.time() - started)
+            return
 
 
 def _unwrap(text: str) -> str:

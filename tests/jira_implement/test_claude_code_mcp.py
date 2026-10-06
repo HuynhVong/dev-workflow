@@ -108,7 +108,11 @@ def test_confluence_stays_read_only_through_claude_code():
     assert "createConfluencePage" not in mcp._server_tools() and "updateConfluencePage" not in mcp._server_tools()
     reader = ConfluenceReader(mcp, DEFAULT_CONFLUENCE_READ_TOOLS)
     assert reader.get_page("42") == {"id": "42"}
-    assert not any("create" in a.lower() or "update" in a.lower() for a in runs.calls[0][0])
+    cmd = runs.calls[0][0]
+    allowed = cmd[cmd.index("--allowedTools") + 1:cmd.index("--no-session-persistence")]
+    assert not any("create" in a.lower() or "update" in a.lower() for a in allowed)
+    hidden = cmd[cmd.index("--disallowedTools") + 1:]
+    assert P + "createConfluencePage" in hidden and P + "updateConfluencePage" in hidden
     with pytest.raises(ConfluenceWriteBlocked):
         ConfluenceReader(mcp, {"get_page": "createConfluencePage"})
     with pytest.raises(RuntimeError):
@@ -180,3 +184,23 @@ def test_a_server_with_its_own_names_still_resolves_or_doctor_names_the_candidat
     assert check.status == "fail"
     assert "edit_comment: <one of: add_comment, edit_comment_body, update_comment>" in check.fix
     assert "transition_issue: <one of: get_transitions>" in check.fix
+
+
+def test_call_sends_only_the_tools_it_needs_and_records_its_tokens(monkeypatch):
+    recorded = []
+    monkeypatch.setattr("dev_workflows.telemetry.record_usage", lambda *a, **kw: recorded.append((a, kw)))
+    out = stream((P + "getAccessibleAtlassianResources", '[{"id": "c1"}]'), (P + "getJiraIssue", '{"key": "AQS-1"}'))
+    out = out.rsplit("\n", 1)[0] + "\n" + json.dumps({"type": "result", "subtype": "success", "result": "DONE",
+                                                      "usage": {"input_tokens": 900, "output_tokens": 20},
+                                                      "modelUsage": {"claude-haiku-4-5-20251001": {}}, "total_cost_usd": 0.001})
+    runs = Runs(out)
+    jira_mcp(runs).call("jira_get_issue", {"issue_key": "AQS-1"})
+    cmd = runs.calls[0][0]
+    hidden = cmd[cmd.index("--disallowedTools") + 1:]
+    # the other server is hidden whole, and this server's tools the call doesn't need one by one
+    assert "mcp__pw" in hidden and P + "searchJiraIssuesUsingJql" in hidden and P + "addCommentToJiraIssue" in hidden
+    assert P + "getJiraIssue" not in hidden and P + "getAccessibleAtlassianResources" not in hidden
+    assert "--disable-slash-commands" in cmd and len(cmd[cmd.index("--system-prompt") + 1]) < 200
+    (step, model, usage), kw = recorded[0]
+    assert step == "mcp.get_issue" and model == "claude-haiku-4-5-20251001" and usage["input_tokens"] == 900
+    assert kw["source"] == "claude_code_mcp" and kw["cost_usd"] == 0.001

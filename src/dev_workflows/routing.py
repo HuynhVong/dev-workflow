@@ -231,11 +231,19 @@ def setup_report(routing: "Routing", repo_paths: dict[str, str] | None = None) -
     return "\n".join(lines), not gone
 
 
+# A structured call carries at most this many skills, sharing this many characters, in its system prompt: full skill
+# files (up to 20k chars each) were sent with every call of a step.
+MAX_SKILLS, SKILL_BUDGET = 2, 4000
+
+
 def skills_system_block(skills: list[Skill]) -> str:
-    """Skill instructions appended to an API call's system prompt (the API cannot load local skills itself)."""
+    """Skill instructions appended to an API call's system prompt (the API cannot load local skills itself): the step's
+    first MAX_SKILLS skills, in preference order, cut to share SKILL_BUDGET characters."""
+    skills = skills[:MAX_SKILLS]
     if not skills:
         return ""
-    return "\n\n" + "\n\n".join(f"<skill name='{s.name}'>\n{s.body()}\n</skill>" for s in skills) + \
+    each = SKILL_BUDGET // len(skills)
+    return "\n\n" + "\n\n".join(f"<skill name='{s.name}'>\n{s.body(each)}\n</skill>" for s in skills) + \
         "\n\nFollow the skills above where they apply to this task."
 
 
