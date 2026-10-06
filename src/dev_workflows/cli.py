@@ -184,7 +184,7 @@ def _add_implement_commands(sub) -> None:
         jira, source = doctor.jira_gateway(ws)
         checks = doctor.jira_access_checks(ws, jira, source, ticket=a.ticket or "")
         print("Jira MCP (required)\n" + "\n".join(
-            f"  {dict(ok='✓', warn='!', fail='✗')[c.status]} {c.label}: {c.detail}" + (f"\n      fix: {c.fix}" if c.fix and c.status != "ok" else "")
+            f"  {dict(ok='✓', warn='!', fail='✗')[c.status]} {c.label}: {c.detail}" + (f"\n      fix: " + c.fix.replace("\n", "\n      ") if c.fix and c.status != "ok" else "")
             for c in checks) + "\n")
         report, ok = setup_report(Routing.from_config(ws.ai), {n: r.path for n, r in ws.repos.items()})
         print(report)
