@@ -75,8 +75,10 @@ def test_call_allows_only_that_tool_and_reads_its_raw_result_then_reuses_the_clo
     allowed = cmd[cmd.index("--allowedTools") + 1:cmd.index("--no-session-persistence")]
     assert allowed == [P + "getJiraIssue", P + "getAccessibleAtlassianResources"] and cmd[cmd.index("--tools") + 1] == ""
     assert '"issue_key": "AQS-1"' in kw["input"] and "ANTHROPIC_API_KEY" not in kw["env"]
+    assert cmd[cmd.index("--max-turns") + 1] == "2"  # the cloudId lookup, then the call; the result is never sent back to the model
     gw.status_and_assignee("AQS-1")
     cmd, kw = runs.calls[1]
+    assert cmd[cmd.index("--max-turns") + 1] == "1"
     assert cmd[cmd.index("--allowedTools") + 1:cmd.index("--no-session-persistence")] == [P + "getJiraIssue"]
     assert 'Already known from getAccessibleAtlassianResources: [{"id": "c1"}]' in kw["input"]
 

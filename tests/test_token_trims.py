@@ -109,3 +109,17 @@ def test_check_fingerprint_ignores_numbers_but_not_which_check_failed():
     c = [{"check": "lint", "ok": False, "output": "3 failed in 1.2s"}]
     assert check_fingerprint(a) == check_fingerprint(b) != check_fingerprint(c)
     assert check_fingerprint([{"check": "test", "ok": True, "output": ""}]) == ""
+
+
+def test_agent_skills_go_in_the_system_prompt_and_slash_commands_stay_off(monkeypatch):
+    from dev_workflows.jira_implement.coding_agent import AGENT_SYSTEM, agent_system
+    monkeypatch.delenv("DEVFLOW_AGENT_PROMPT", raising=False)
+    assert agent_system("\n\n<skill name='x'>rule</skill>").startswith(AGENT_SYSTEM) and "<skill name='x'>" in agent_system("<skill name='x'>")
+    monkeypatch.setenv("DEVFLOW_AGENT_PROMPT", "default")
+    assert agent_system("S")["preset"] == "claude_code" and agent_system("S")["append"] == "S"
+
+
+def test_jira_calls_stop_after_the_tool_runs_and_structured_calls_skip_user_config():
+    from dev_workflows.llm import NO_EXTRAS
+    i = NO_EXTRAS.index("--setting-sources")
+    assert NO_EXTRAS[i + 1] == "project"

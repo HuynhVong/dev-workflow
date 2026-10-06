@@ -101,7 +101,11 @@ class ClaudeLLM:
 # A structured call needs no MCP server and no skill listing. Without these flags Claude Code sends the definitions of
 # every MCP tool the developer has installed with every call (`--tools ""` only drops the built-in tools), which can be
 # tens of thousands of tokens per call.
-NO_EXTRAS = ("--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--disable-slash-commands")
+# `--setting-sources project` also keeps the developer's own ~/.claude (CLAUDE.md, hooks, plugins) out of the call: it
+# runs in an empty temp folder, so nothing is loaded at all. Measured: a 3k-token user CLAUDE.md added 4.3k tokens to
+# every structured call.
+NO_EXTRAS = ("--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--disable-slash-commands",
+             "--setting-sources", "project")
 
 
 class ClaudeCliLLM:

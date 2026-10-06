@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from .. import telemetry
-from ..routing import Routing, skills_hint
+from ..routing import Routing, skills_system_block
 from .claude_code_mcp import tool_prefix
 from .confluence import is_write_tool
 from .scope import ScopeGuard
@@ -186,10 +186,33 @@ SQL_RULES = (
 # The built-in tools an agent session gets. Claude Code's full set adds long definitions (sub-agents, web, todo,
 # notebook...) that every turn of every session re-reads, and a sub-agent starts a whole second session. MCP tools
 # (Playwright, the SQL proxy) are not built-in tools, so this list does not affect them.
-AGENT_TOOLS = ["Read", "Edit", "MultiEdit", "Write", "Glob", "Grep", "Bash", "Skill"]
-READ_ONLY_TOOLS = ["Read", "Glob", "Grep", "Bash", "Skill"]
+# No Skill tool: the step's skills are put in the system prompt (bounded, like the API backend does), so Claude Code
+# neither lists every installed skill in each session nor loads a whole skill file into the context on demand.
+AGENT_TOOLS = ["Read", "Edit", "MultiEdit", "Write", "Glob", "Grep", "Bash"]
+READ_ONLY_TOOLS = ["Read", "Glob", "Grep", "Bash"]
 # Every turn re-reads the session's whole context, so the turn count multiplies the cost. Exploring a repo is shallow.
 EXPLORE_TURNS = 30
+
+
+# The agent's system prompt. The SDK sends `--system-prompt ""` when none is given, i.e. an empty one, so this adds a few
+# lines of guidance rather than replacing Claude Code's own (about 3k tokens more, measured 10.3k vs 13.5k on a one-line
+# edit). Set DEVFLOW_AGENT_PROMPT=default to use Claude Code's own prompt instead.
+AGENT_SYSTEM = (
+    "You are a coding agent working in one repository on a developer's machine.\n"
+    "- Read a file before you edit it. Find things with Grep/Glob, then Read only the part you need (offset/limit for long files).\n"
+    "- Make the smallest change that does the task, in the style of the surrounding code. No refactors, reformatting or "
+    "comments nobody needs.\n"
+    "- Keep command output small: quiet flags, `| tail -n 40`, one test file instead of the whole suite when you can.\n"
+    "- Do not repeat a tool call that already answered you. Verify with the repository's own checks when you are given them.\n"
+    "- When you are done, give the structured result and nothing more."
+)
+
+
+def agent_system(skills_block: str) -> str | dict:
+    """The agent's system prompt with the step's skills; Claude Code's own preset when DEVFLOW_AGENT_PROMPT=default."""
+    if os.getenv("DEVFLOW_AGENT_PROMPT") == "default":
+        return {"type": "preset", "preset": "claude_code", "append": skills_block}
+    return AGENT_SYSTEM + skills_block
 
 
 class ClaudeCodeAgent:
@@ -234,7 +257,8 @@ class ClaudeCodeAgent:
             self.scope.require_path(r)
         model = self.routing.model(step, escalate=escalate)
         skill_roots = [os.path.realpath(d) for d in self.routing.registry.dirs]
-        prompt += skills_hint(self.routing.skills(step, repo_path=roots[0]))
+        skills = skills_system_block(self.routing.skills(step, repo_path=roots[0]))
+        system = agent_system(skills)
         has_sql = PROXY_NAME in self.mcp_servers
         if has_sql:
             prompt += SQL_RULES
@@ -267,9 +291,9 @@ class ClaudeCodeAgent:
             cwd=roots[0], add_dirs=roots[1:], model=model, effort=self.routing.effort(model),
             max_turns=min(max_turns or self.max_turns, self.max_turns), tools=READ_ONLY_TOOLS if read_only else AGENT_TOOLS,
             permission_mode="acceptEdits", setting_sources=["user", "project"], mcp_servers=self.mcp_servers,
-            hooks=hooks,
+            hooks=hooks, system_prompt=system,
             output_format={"type": "json_schema", "schema": schema},
-            extra_args={"strict-mcp-config": None} if self.strict_mcp else {},
+            extra_args={"disable-slash-commands": None, **({"strict-mcp-config": None} if self.strict_mcp else {})},
         )
 
         async def go() -> dict:
