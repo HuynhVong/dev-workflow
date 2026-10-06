@@ -13,7 +13,8 @@ Jira and Confluence. Run them from the `devflow` CLI or the local web app (`devf
 
 ## Prerequisites
 
-- Python 3.11+ and an `ANTHROPIC_API_KEY`.
+- Python 3.11+, and either a Claude Code login (Claude Pro or Max plan, no API key) or an `ANTHROPIC_API_KEY`
+  (see [AI backend](#ai-backend)).
 - **Jira MCP** with read and write access, connected to Claude Code (`claude mcp add ...`) or listed in `workspace.yaml`.
 - **Confluence MCP**. Read access is enough: every workflow treats Confluence as strictly read-only and never exposes
   its write tools.
@@ -28,7 +29,7 @@ Jira and Confluence. Run them from the `devflow` CLI or the local web app (`devf
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-cp .env.example .env                          # add ANTHROPIC_API_KEY
+cp .env.example .env                          # optional: ANTHROPIC_API_KEY, or leave it out to use your Claude login
 cp workspace.example.yaml workspace.yaml      # list your repos, their checks and MCP servers
 devflow setup --ticket AQS-5512               # first-time setup
 devflow doctor                                # every connection check, any time (also in the UI)
@@ -47,6 +48,18 @@ Every AI step picks its own model at run time (defaults in `routing.py`, overrid
 Haiku for fetching, context and summaries, Sonnet for analysis, coding and review, Opus for planning and contract
 review. Deterministic steps use no model. Every model runs at **medium** effort, fixed by design. The table is in
 `docs/jira-ticket-implement-design.md`.
+
+### AI backend
+
+The AI steps run in one of two ways, picked by `DEVFLOW_LLM_BACKEND` (default `auto`):
+
+- `claude-cli`: each step runs through headless Claude Code (`claude -p --json-schema`) on the account you are
+  logged in to with `claude`, so a **Claude Pro or Max plan works with no API key**. Calls count against that plan's
+  usage limits, and which models you get depends on the plan.
+- `api`: each step calls the Anthropic API with `ANTHROPIC_API_KEY`, billed per token.
+- `auto`: `api` when `ANTHROPIC_API_KEY` is set, otherwise `claude-cli`.
+
+The coding steps always run through Claude Code. `devflow doctor` shows which backend is in use.
 
 ## Usage
 
