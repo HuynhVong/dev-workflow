@@ -41,6 +41,16 @@ CONFLUENCE_EQUIVALENTS = {
     "search": {"confluencesearch", "searchconfluenceusingcql"},
     "get_attachments": {"confluencegetattachments"},
 }
+# Word rules for servers with their own naming (e.g. `transition`, `update_comment`): op -> (words it must have,
+# words that rule it out). Used only when exactly one tool fits.
+WORD_RULES = {
+    "get_issue": ({"issue"}, {"search", "create", "update", "delete", "transition", "comment", "link", "worklog"}, {"get", "read", "fetch"}),
+    "get_transitions": ({"transitions"}, set(), set()),
+    "transition_issue": ({"transition"}, {"get", "list", "fetch"}, set()),
+    "add_comment": ({"comment"}, {"edit", "update", "delete", "get", "list"}, {"add", "create", "post"}),
+    "edit_comment": ({"comment"}, {"add", "create", "delete", "get", "list"}, {"edit", "update", "modify"}),
+    "search": ({"search"}, {"confluence", "user"}, set()),
+}
 # Lookups some servers need before the real call (the official Atlassian connector wants a cloudId).
 HELPERS = {"getaccessibleatlassianresources", "atlassianuserinfo"}
 # Operations that may quietly do nothing when the server has no tool for them (the caller copes with no result).
@@ -50,6 +60,11 @@ DEFAULT_MODEL = "haiku"
 
 def _norm(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+def _words(name: str) -> set[str]:
+    """`transitionJiraIssue` / `jira_transition-issue` -> {"transition", "jira", "issue"}."""
+    return {w.lower() for w in re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+", name)}
 
 
 def tool_prefix(server: str) -> str:
@@ -150,8 +165,20 @@ class ClaudeCodeMcp:
         wanted = self.tools.get(op, "")
         if wanted in available:
             return wanted
-        names = {_norm(wanted)} | self.equivalents.get(op, set())
-        return next((t for t in available if _norm(t) in names), None)
+        names = {_norm(wanted), _norm(op)} | self.equivalents.get(op, set())
+        found = next((t for t in available if _norm(t) in names), None)
+        if found or op not in WORD_RULES:
+            return found
+        need, never, one_of = WORD_RULES[op]
+        fits = [t for t in available
+                if need <= _words(t) and not never & _words(t) and (not one_of or one_of & _words(t))]
+        return fits[0] if len(fits) == 1 else None
+
+    def related(self, op: str) -> list[str]:
+        """The server's tools that share a key word with `op` (shown by doctor when it can't pick one)."""
+        key = (WORD_RULES.get(op, ({op.split("_")[-1]}, set(), set()))[0]) or {op}
+        stems = {w.rstrip("s") for w in key}
+        return [t for t in self._server_tools() if {w.rstrip("s") for w in _words(t)} & stems]
 
     def list_tools(self) -> list[str]:
         """devflow's configured names this server can serve (so JiraGateway's missing-tool checks keep working)."""

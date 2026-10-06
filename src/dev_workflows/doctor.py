@@ -76,7 +76,7 @@ def mcp_checks(ws, jira, confluence, need_confluence: bool = True) -> list[Check
         try:
             missing = jira.missing_tools()
             out.append(_fail("mcp.jira", "Jira MCP", "Jira MCP read and write tools", f"Jira MCP is missing tools {missing} (read + write needed)",
-                             "Point jira_tools in workspace.yaml at your server's tool names.") if missing else
+                             _jira_tools_fix(ws, jira.mcp, missing)) if missing else
                        _ok("mcp.jira", "Jira MCP", "Jira MCP read and write tools", f"{len(ws.jira_tools)} tools present"))
         except Exception as e:  # noqa: BLE001
             out.append(_fail("mcp.jira", "Jira MCP", "Jira MCP reachable", f"Jira MCP unreachable: {e}", "Check the server command, URL and token."))
@@ -95,6 +95,19 @@ def mcp_checks(ws, jira, confluence, need_confluence: bool = True) -> list[Check
             except Exception as e:  # noqa: BLE001
                 out.append(_fail("mcp.confluence", "Confluence MCP", "Confluence MCP reachable", f"Confluence MCP unreachable: {e}"))
     return out
+
+
+def _jira_tools_fix(ws, mcp, missing: list[str]) -> str:
+    """The workspace.yaml lines to add, with the server's own candidates when it is a Claude Code server."""
+    ops = [op for op, name in ws.jira_tools.items() if name in missing]
+    if not hasattr(mcp, "related"):
+        return "Point jira_tools in workspace.yaml at your server's tool names."
+    lines = []
+    for op in ops:
+        options = mcp.related(op)
+        lines.append(f"  {op}: <one of: {', '.join(options)}>" if options else f"  {op}: <no tool for this on {mcp.server}>")
+    return ("Under jira_tools in workspace.yaml, set the server's tool for each (`claude mcp list` / `/mcp` shows them):\n"
+            "jira_tools:\n" + "\n".join(lines))
 
 
 def jira_access_checks(ws, jira, source: str = "", ticket: str = "") -> list[Check]:
@@ -386,7 +399,7 @@ def render(checks: list[Check]) -> str:
         sel = [c for c in checks if c.group == g]
         if sel:
             lines.append(f"\n{g}")
-            lines += [f"  {marks[c.status]} {c.label}: {c.detail}" + (f"\n      fix: {c.fix}" if c.fix and c.status != "ok" else "") for c in sel]
+            lines += [f"  {marks[c.status]} {c.label}: {c.detail}" + (f"\n      fix: " + c.fix.replace("\n", "\n      ") if c.fix and c.status != "ok" else "") for c in sel]
     s = summary(checks)
     lines.append(f"\n{s['ok']} ok, {s['warn']} warnings, {s['fail']} failures ({s['blocking']} blocking)")
     return "\n".join(lines).strip()

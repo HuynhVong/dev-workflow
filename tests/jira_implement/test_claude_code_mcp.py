@@ -163,3 +163,20 @@ def test_doctor_reports_each_chosen_server():
     assert checks["cc.confluence"].status == "fail" and "no MCP server named" in checks["cc.confluence"].detail
     assert checks["cc.playwright"].status == "ok"
     assert doctor.claude_code_mcp_checks(SimpleNamespace(claude_code_mcp={})) == []
+
+
+def test_a_server_with_its_own_names_still_resolves_or_doctor_names_the_candidates():
+    own = ["get_issue", "get_transitions", "transition", "add_comment", "update_comment", "search_issues", "get_user_profile"]
+    mcp = ClaudeCodeMcp("pal-jira", DEFAULT_JIRA_TOOLS, JIRA_EQUIVALENTS, init=lambda: init(tools=own, name="pal-jira"))
+    assert mcp.resolve("transition_issue") == "transition" and mcp.resolve("edit_comment") == "update_comment"
+    assert mcp.resolve("add_comment") == "add_comment" and mcp.resolve("get_transitions") == "get_transitions"
+    assert JiraGateway(mcp, DEFAULT_JIRA_TOOLS, ("To Do",)).missing_tools() == []
+
+    # two candidates for edit_comment: doctor lists them instead of guessing
+    two = ["get_issue", "get_transitions", "add_comment", "edit_comment_body", "update_comment"]
+    mcp = ClaudeCodeMcp("pal-jira", DEFAULT_JIRA_TOOLS, JIRA_EQUIVALENTS, init=lambda: init(tools=two, name="pal-jira"))
+    ws = SimpleNamespace(jira_tools=DEFAULT_JIRA_TOOLS, confluence_server="x")
+    check = doctor.mcp_checks(ws, JiraGateway(mcp, DEFAULT_JIRA_TOOLS, ("To Do",)), None, need_confluence=False)[0]
+    assert check.status == "fail"
+    assert "edit_comment: <one of: add_comment, edit_comment_body, update_comment>" in check.fix
+    assert "transition_issue: <one of: get_transitions>" in check.fix
