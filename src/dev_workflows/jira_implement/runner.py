@@ -14,7 +14,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from .. import telemetry
-from ..llm import ClaudeLLM
+from ..llm import make_llm
 from ..routing import Routing
 from .confluence import ConfluenceReader
 from .address_review import WORKFLOW as REVIEW_WORKFLOW
@@ -58,7 +58,7 @@ def real_deps(ws: Workspace, store: Store) -> Deps:
     jira_mcp = StdioOrHttpMcp(found[0], found[1]) if found else MissingMcp(ws.jira_server)
     conf_mcp = jira_mcp if ws.confluence_server == ws.jira_server else _mcp(ws, ws.confluence_server)
     routing = Routing.from_config(ws.ai)
-    return Deps(workspace=ws, store=store, llm=ClaudeLLM(routing=routing), routing=routing,
+    return Deps(workspace=ws, store=store, llm=make_llm(routing), routing=routing,
                 jira=JiraGateway(jira_mcp, ws.jira_tools, ws.status_order),
                 confluence=ConfluenceReader(conf_mcp, ws.confluence_tools))
 

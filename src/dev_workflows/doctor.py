@@ -188,10 +188,17 @@ def vcs_checks(ws, vcs, repos: list[str], glab: bool = True) -> tuple[list[Check
     return out, ok_repos
 
 
-def ai_checks(env=os.environ) -> list[Check]:
+def ai_checks(env=os.environ, which: Callable[[str], str | None] = shutil.which) -> list[Check]:
+    from .config import llm_backend
+    if llm_backend(env=env) == "claude-cli":
+        label = "AI steps via Claude Code login"
+        return [_ok("ai.key", "AI", label, "no API key; runs on your Claude Pro/Max plan and its usage limits") if which("claude") else
+                _fail("ai.key", "AI", label, "Claude Code CLI ('claude') is not installed",
+                      "Install Claude Code and run `claude` once to log in, or set ANTHROPIC_API_KEY to use the API instead.")]
     key = bool(env.get("ANTHROPIC_API_KEY"))
     return [_ok("ai.key", "AI", "ANTHROPIC_API_KEY", "set") if key else
-            _fail("ai.key", "AI", "ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY is not set", "Add it to .env or your shell profile.")]
+            _fail("ai.key", "AI", "ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY is not set",
+                  "Add it to .env or your shell profile, or unset DEVFLOW_LLM_BACKEND to use your Claude Code login.")]
 
 
 def skill_checks(routing: Routing) -> list[Check]:
@@ -270,12 +277,24 @@ def run(ws, deps=None, repos: list[str] | None = None, which: Callable = shutil.
 
 def ping_models(routing: Routing) -> list[Check]:
     """Optional: one tiny call per model tier (costs a few tokens). Only run when the developer asks."""
+    import subprocess
+
     import anthropic
-    out, client = [], anthropic.Anthropic()
+
+    from .config import llm_backend
+    cli = llm_backend() == "claude-cli"
+    out, client = [], None if cli else anthropic.Anthropic()
+    env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
     for tier in ("haiku", "sonnet", "opus"):
         model = routing.models.get(tier, tier)
         try:
-            client.messages.create(model=model, max_tokens=8, messages=[{"role": "user", "content": "Reply with OK."}])
+            if cli:
+                proc = subprocess.run(["claude", "-p", "--model", model, "--tools", "", "--no-session-persistence"], input="Reply with OK.",
+                                      capture_output=True, text=True, env=env, timeout=120)
+                if proc.returncode:
+                    raise RuntimeError((proc.stderr or proc.stdout).strip())
+            else:
+                client.messages.create(model=model, max_tokens=8, messages=[{"role": "user", "content": "Reply with OK."}])
             out.append(_ok(f"ai.{tier}", "AI", f"{tier}: {model}", "reachable"))
         except Exception as e:  # noqa: BLE001
             out.append(_fail(f"ai.{tier}", "AI", f"{tier}: {model}", f"{type(e).__name__}: {str(e)[:200]}", blocking=False))
