@@ -29,6 +29,7 @@ from .confluence import ConfluenceReader, page_ids_from_urls
 from .jira import JiraGateway, marker
 from .ledger import Effect, Store, perform
 from .mcp_client import TransientToolError
+from .mcp_config import playwright_servers
 from .models import (Analysis, ContractCheck, ContractReview, FeedbackAnalysis, Impact, Outdated, Plan,
                      RequirementContext)
 from .scope import ScopeGuard, ScopeViolation
@@ -172,7 +173,7 @@ class Deps:
         scope = ScopeGuard.from_state(state["scope"])
         if self.coder_factory:
             return self.coder_factory(scope)
-        playwright = {k: v for k, v in self.workspace.mcp_servers.items() if "playwright" in k.lower()}
+        playwright = playwright_servers(self.workspace)
         return ClaudeCodeAgent(scope, routing=self.routing, mcp_servers=playwright)
 
     def e2e_agent(self, state: dict, evidence_dir: str, profile_dir: str) -> CodingAgent:
@@ -181,8 +182,7 @@ class Deps:
         scope = ScopeGuard.from_state(state["scope"])
         if self.coder_factory:
             return self.coder_factory(scope)
-        playwright = {k: playwright_config(v, evidence_dir, profile_dir)
-                      for k, v in self.workspace.mcp_servers.items() if "playwright" in k.lower()}
+        playwright = {k: playwright_config(v, evidence_dir, profile_dir) for k, v in playwright_servers(self.workspace).items()}
         return ClaudeCodeAgent(scope, routing=self.routing, mcp_servers=playwright)
 
     def run_cmd(self, cmd: str, cwd: str, env: dict | None = None) -> subprocess.CompletedProcess:

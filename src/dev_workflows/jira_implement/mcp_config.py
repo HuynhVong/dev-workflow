@@ -70,3 +70,51 @@ def resolve_jira_server(ws, files: list[Path] | None = None) -> tuple[str, dict,
 
 ADD_JIRA_HINT = ("Connect a Jira MCP to Claude Code, e.g. `claude mcp add --scope user atlassian -- uvx mcp-atlassian` with "
                  "JIRA_URL, JIRA_USERNAME and JIRA_API_TOKEN set (see workspace.example.yaml), then run `devflow setup` again.")
+
+
+# --- which client talks to each server ---------------------------------------------------------------------------
+def jira_mcp_for(ws, files: list[Path] | None = None):
+    """(McpTools, source) for Jira, or (None, ""): the Claude Code server named under claude_code_mcp.jira (its
+    login and connectors), else devflow's own client for the server resolve_jira_server finds."""
+    from .mcp_client import StdioOrHttpMcp
+    if ws.claude_code_mcp.get("jira"):
+        from .claude_code_mcp import jira_mcp
+        return jira_mcp(ws), f"Claude Code login: {ws.claude_code_mcp['jira']}"
+    found = resolve_jira_server(ws, files)
+    if not found:
+        return None, ""
+    name, cfg, source = found
+    return StdioOrHttpMcp(name, cfg), source
+
+
+def confluence_mcp_for(ws, jira_mcp=None, files: list[Path] | None = None):
+    """McpTools for Confluence (always read-only above this layer), or None: claude_code_mcp.confluence, else the
+    workspace's confluence_server, else the Jira server when both are the same Atlassian server."""
+    from .mcp_client import StdioOrHttpMcp
+    if ws.claude_code_mcp.get("confluence"):
+        from .claude_code_mcp import confluence_mcp
+        return confluence_mcp(ws)
+    if ws.confluence_server in ws.mcp_servers:
+        return StdioOrHttpMcp(ws.confluence_server, ws.mcp_servers[ws.confluence_server])
+    if ws.confluence_server != ws.jira_server:
+        return None
+    if ws.claude_code_mcp.get("jira"):  # the default Jira server, not the Claude Code one chosen for Jira only
+        found = resolve_jira_server(ws, files)
+        return StdioOrHttpMcp(found[0], found[1]) if found else None
+    return jira_mcp
+
+
+def playwright_servers(ws, files: list[Path] | None = None) -> dict[str, dict]:
+    """Playwright MCP configs for the coding/E2E agents: workspace mcp_servers, else the Claude Code server named
+    under claude_code_mcp.playwright (its config from Claude Code's files, so devflow can still set its screenshot
+    and profile folders). An account-level server with no local config returns {} and is inherited by the agent."""
+    found = {k: v for k, v in ws.mcp_servers.items() if "playwright" in k.lower()}
+    name = ws.claude_code_mcp.get("playwright")
+    if found or not name:
+        return found
+    cc = claude_code_mcp_servers(files)
+    return {name: cc[name]["config"]} if name in cc else {}
+
+
+def has_playwright(ws) -> bool:
+    return bool(ws.claude_code_mcp.get("playwright")) or any("playwright" in k.lower() for k in ws.mcp_servers)

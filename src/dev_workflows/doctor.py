@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
 
+from .jira_implement.mcp_config import has_playwright
 from .routing import Routing, repo_stack
 
 
@@ -57,7 +58,7 @@ def tool_checks(ws, which: Callable[[str], str | None], repos: list[str]) -> lis
                _fail("cli.claude", "CLIs", "Claude Code CLI installed", "Claude Code CLI ('claude') is not installed",
                      "Install Claude Code (npm i -g @anthropic-ai/claude-code) and run `claude` once to log in."))
     if any(ws.repos[r].has_ui for r in repos if r in ws.repos):
-        has = any("playwright" in k.lower() for k in ws.mcp_servers)
+        has = has_playwright(ws)
         out.append(_ok("mcp.playwright", "Playwright MCP", "Playwright MCP configured") if has else
                    _fail("mcp.playwright", "Playwright MCP", "Playwright MCP configured",
                          "a UI repo is in scope but no Playwright MCP server is configured",
@@ -139,16 +140,41 @@ def jira_access_checks(ws, jira, source: str = "", ticket: str = "") -> list[Che
     return out
 
 
+def claude_code_mcp_checks(ws, servers: dict | None = None) -> list[Check]:
+    """The Claude Code MCP servers chosen at setup (claude_code_mcp): connected, or what to do about them."""
+    if not ws.claude_code_mcp:
+        return []
+    from .jira_implement.claude_code_mcp import cached_init, claude_code_servers
+    group = {"jira": "Jira MCP", "confluence": "Confluence MCP", "playwright": "Playwright MCP"}
+    try:
+        servers = servers if servers is not None else claude_code_servers(cached_init())
+    except Exception as e:  # noqa: BLE001
+        return [_fail("cc.mcp", "AI", "Claude Code MCP servers", f"cannot list them: {str(e)[:200]}",
+                      "Install Claude Code and log in (`claude`).")]
+    out = []
+    for use, name in ws.claude_code_mcp.items():
+        if use not in group:
+            continue
+        label, info = f"{name} (Claude Code login)", servers.get(name)
+        if info is None:
+            out.append(_fail(f"cc.{use}", group[use], label, f"Claude Code has no MCP server named '{name}'",
+                             "Run `devflow setup` again and pick a name from the list, or connect it in Claude Code."))
+        elif info["status"] != "connected":
+            out.append(_fail(f"cc.{use}", group[use], label, f"{info['status']}",
+                             "Run `claude`, then `/mcp`, and sign in to it (account connectors: claude.ai > Settings > Connectors)."))
+        else:
+            out.append(_ok(f"cc.{use}", group[use], label, f"connected, {len(info['tools'])} tools"))
+    return out
+
+
 def jira_gateway(ws):
-    """(JiraGateway, source) for the Jira server from workspace.yaml or Claude Code, or (None, "")."""
+    """(JiraGateway, source) for the Jira server (Claude Code login, workspace.yaml or Claude Code's config), or (None, "")."""
     from .jira_implement.jira import JiraGateway
-    from .jira_implement.mcp_client import StdioOrHttpMcp
-    from .jira_implement.mcp_config import resolve_jira_server
-    found = resolve_jira_server(ws)
-    if not found:
+    from .jira_implement.mcp_config import jira_mcp_for
+    mcp, source = jira_mcp_for(ws)
+    if mcp is None:
         return None, ""
-    name, cfg, source = found
-    return JiraGateway(StdioOrHttpMcp(name, cfg), ws.jira_tools, ws.status_order), source
+    return JiraGateway(mcp, ws.jira_tools, ws.status_order), source
 
 
 def origin_host(url: str) -> str:
@@ -290,16 +316,17 @@ def run(ws, deps=None, repos: list[str] | None = None, which: Callable = shutil.
         jira, confluence, which, vcs_runner = deps.jira, deps.confluence, deps.which, deps.vcs_runner
     else:
         from .jira_implement.confluence import ConfluenceReader
-        from .jira_implement.mcp_client import StdioOrHttpMcp
+        from .jira_implement.mcp_config import confluence_mcp_for
         jira, source = jira_gateway(ws)
-        if ws.confluence_server in ws.mcp_servers:
-            confluence = ConfluenceReader(StdioOrHttpMcp(ws.confluence_server, ws.mcp_servers[ws.confluence_server]), ws.confluence_tools)
-        elif jira is not None and ws.confluence_server == ws.jira_server:
-            confluence = ConfluenceReader(jira.mcp, ws.confluence_tools)  # one Atlassian server; Confluence stays read-only
-    checks = ai_checks() + tool_checks(ws, which, repos) + mcp_checks(ws, jira, confluence, need_confluence=not review)
+        conf_mcp = confluence_mcp_for(ws, jira.mcp if jira is not None else None)
+        confluence = ConfluenceReader(conf_mcp, ws.confluence_tools) if conf_mcp is not None else None  # read-only
+    checks = ai_checks() + tool_checks(ws, which, repos)
+    if deps is None:
+        checks += claude_code_mcp_checks(ws)
+    checks += mcp_checks(ws, jira, confluence, need_confluence=not review)
     checks += [c for c in jira_access_checks(ws, jira, source) if c.id != "mcp.jira.setup"]
     if review and not any(c.id == "mcp.playwright" for c in checks):
-        has = any("playwright" in k.lower() for k in ws.mcp_servers)
+        has = has_playwright(ws)
         checks.append(_ok("mcp.playwright", "Playwright MCP", "Playwright MCP configured") if has else
                       _fail("mcp.playwright", "Playwright MCP", "Playwright MCP configured", "the ticket review's E2E tests need a Playwright MCP",
                             "Add a `playwright` server under mcp_servers in workspace.yaml (npx @playwright/mcp@latest)."))

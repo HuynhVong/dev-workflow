@@ -51,6 +51,14 @@ mcp_servers:
     command: npx
     args: ["@playwright/mcp@latest"]
 
+# Or use the MCP servers of your logged-in Claude Code (Pro/Max account connectors such as "claude.ai Atlassian",
+# plugin servers, or ones added with `claude mcp add`): no tokens here, Claude Code holds the login. `devflow setup`
+# lists them and writes this block; a blank entry uses the default above. Confluence stays read-only either way.
+# claude_code_mcp:
+#   jira: claude.ai Atlassian
+#   confluence: claude.ai Atlassian
+#   playwright: ""
+
 jira_server: atlassian
 confluence_server: atlassian
 jira_user: you@acme.io              # warns if the ticket is assigned to someone else; the standup's "you"

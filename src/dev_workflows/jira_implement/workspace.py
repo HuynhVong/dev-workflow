@@ -66,6 +66,9 @@ class Workspace:
     ui: dict = field(default_factory=dict)      # graph_sources, port, notifications
     ai: dict = field(default_factory=dict)  # per-step models and skills, see dev_workflows.routing
     standup: dict = field(default_factory=dict)  # started_from, started_to, review_status, timezone (see jira_implement.standup)
+    # MCP servers of the logged-in Claude Code to use instead of devflow's own client: {jira, confluence, playwright}
+    # -> server name as `claude mcp list` shows it. Blank = the default (mcp_servers here, else Claude Code's config).
+    claude_code_mcp: dict = field(default_factory=dict)
 
     def repo(self, name: str) -> RepoConfig:
         return self.repos[name]
@@ -115,6 +118,7 @@ def load_workspace(path: str | Path) -> Workspace:
         ui=dict(raw.get("ui") or {}),
         ai=dict(raw.get("ai") or {}),
         standup=dict(raw.get("standup") or {}),
+        claude_code_mcp={k: str(v).strip() for k, v in (raw.get("claude_code_mcp") or {}).items() if v and str(v).strip()},
     )
 
 
@@ -192,3 +196,25 @@ def save_raw(path: str | Path, data: dict) -> Workspace:
         raise
     tmp.replace(p)
     return ws
+
+
+def set_claude_code_mcp(path: str | Path, choice: dict[str, str]) -> None:
+    """Write the `claude_code_mcp:` block of workspace.yaml in place, keeping the rest of the file (and its comments)."""
+    p = Path(path).expanduser()
+    lines = p.read_text().splitlines() if p.exists() else []
+    out, skipping = [], False
+    for line in lines:
+        if line.startswith("claude_code_mcp:"):
+            skipping = True
+            continue
+        if skipping and (line.startswith((" ", "\t")) or not line.strip()):
+            continue
+        skipping = False
+        out.append(line)
+    while out and not out[-1].strip():
+        out.pop()
+    block = ["", "# MCP servers of your logged-in Claude Code (names as `claude mcp list` shows them); blank = the default",
+             "claude_code_mcp:"] + [f"  {use}: {yaml.safe_dump(name, default_flow_style=True).strip().removesuffix(chr(10) + '...')}"
+                                    if name else f"  {use}: \"\"" for use, name in choice.items()]
+    p.write_text("\n".join(out + block) + "\n")
+    load_workspace(p)  # still valid
