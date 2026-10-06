@@ -133,7 +133,7 @@ After `targeted_fix`, a run always goes back through `integration_check` (when i
 | 18 | `commit_and_push` | Idempotent, per repo: commits `<KEY>: <summary>` with a `Devflow-Run: <run_id>` trailer, then `rtk git push -u origin <KEY>`. It never force-pushes. | `repos[r].head_sha`, `pushed_sha` |
 | 19 | `open_draft_mrs` | Idempotent, per repo: finds an existing MR for `<KEY>` or creates one with `rtk glab mr create --draft --target-branch develop`. The description links the Jira ticket, the sibling MRs and the merge order. It never merges. | `repos[r].mr_iid`, `mr_url` |
 | ~~20~~ | ~~`watch_pipelines`~~ | **Removed.** The workflow does not touch CI/CD in any way: no pipeline status, no CI logs, no CI fixes. All verification happens on your local clones (checks, integration/E2E, manual test). | — |
-| 21 | `jira_update` | Idempotent: moves the ticket to *Code Review* only if it is behind that status, and adds or updates **one** delivery comment with the MR links and local test results. | `side_effects[]` |
+| 21 | `jira_update` | Idempotent: adds or updates **one** delivery comment (the ticket status is never changed; the developer moves it) with the MR links and local test results. | `side_effects[]` |
 | 22 | `summary` | Final report: what changed per repo, branches, MRs and merge order, local check, E2E and manual-test results, decisions taken, and Confluence pages that look out of date (for their owner to update). Sets `COMPLETED`. | `output` |
 
 **Abort** is a node too: it records who aborted, at which checkpoint and why, and sets `ABORTED`. It ends the graph, so no later node runs. Local branches and uncommitted edits are left untouched and listed in the audit log.
@@ -151,7 +151,7 @@ On resume, any intent without a result is **reconciled**: the node queries the r
 
 | Side effect | How existing results are detected |
 |---|---|
-| Jira status change | Reads the current status first, and transitions only if the ticket is behind the target. |
+| Jira status change | Never. The developer moves the ticket. |
 | Jira comment | Each comment ends with a hidden marker `devflow:<run_id>:<step>`. The node searches for the marker and updates that comment instead of adding a new one. |
 | Branch creation | `rtk git rev-parse --verify <KEY>`, `rtk git ls-remote --heads origin <KEY>`, and the ownership marker `branch.<KEY>.devflow-run`. **Branch reuse rule:** the branch is reused automatically only when its owner is **this run** *and* its base sha matches the recorded one *and* it has not diverged from `origin/<KEY>`. If the owner is a previous or different run, or is unknown (no marker, a remote-only branch, or a branch you made by hand), or the base or divergence check fails, the run pauses ⏸ and shows the owner, base sha, commits ahead and behind, and any uncommitted changes. You choose **reuse** (explicit approval, logged; the branch then becomes owned by this run) or **abort**. It never deletes, resets or overwrites a branch. |
 | Commit | Skipped when the tree is clean and `HEAD` already carries this run's `Devflow-Run` trailer. |
@@ -284,9 +284,9 @@ Reading threads and replying in them needs GitLab's discussions API, so `run_vcs
 
 ## Defaults (tell me if any are wrong)
 1. A branch named by the ticket key alone (`AQS-5512`), created from the latest `develop`; commits are `AQS-5512: summary`, and MRs target `develop`. *(Set by you.)*
-2. You move the ticket to *In Progress* before starting; the workflow only moves it to *Code Review* at step 21. *(Set by you.)*
+2. You move the ticket to *In Progress* before starting; you move it to *Code Review* yourself; the workflow never changes status. *(Set by you.)*
 3. MRs are always draft; the workflow never merges, approves or un-drafts. *(Set by you.)*
-4. The only Jira writes are at step 21: the move to *Code Review* and one delivery comment, both idempotent. Confluence is read-only, with no exceptions. *(Set by you.)*
+4. The only Jira write is at step 21: one delivery comment, idempotent. It never transitions a ticket. Confluence is read-only, with no exceptions. *(Set by you.)*
 5. Claude Code is the coding engine and LangGraph is the orchestrator. *(Set by you.)*
 6. **Fix-attempt budget: 3 per repo for the whole run** (see §4, fix-attempt cap). It is never reset and `targeted_fix` cannot exceed it; at 3 the run pauses for you. *(Set by you.)*
 7. Repos run in dependency waves, with parallelism only inside a wave. *(Set by you.)*
