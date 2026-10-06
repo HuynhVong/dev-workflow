@@ -6,10 +6,12 @@ and are never called, not even to test them.
 """
 import json
 import os
+import re
 import shutil
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlparse
 
 from .routing import Routing, repo_stack
 
@@ -149,24 +151,66 @@ def jira_gateway(ws):
     return JiraGateway(StdioOrHttpMcp(name, cfg), ws.jira_tools, ws.status_order), source
 
 
+def origin_host(url: str) -> str:
+    """Host of a git remote URL: https://host/..., ssh://git@host:2222/..., or scp-style git@host:group/repo.git."""
+    url = url.strip()
+    if "://" in url:
+        return (urlparse(url).hostname or "").lower()
+    m = re.match(r"^(?:[^@/]+@)?([^:/]+):", url)
+    return m.group(1).lower() if m else ""
+
+
+def glab_auth_checks(ws, vcs, repos: list[str], first: str | None) -> list[Check]:
+    """`glab auth status --hostname <host>` once per GitLab host the repos' origins point to (e.g. a self-hosted
+    GitLab), so a stale gitlab.com login the workflows never use does not fail the check."""
+    hosts: dict[str, str] = {}  # host -> a repo on it, to run glab from
+    for name in repos:
+        if Path(ws.repos[name].path, ".git").exists():
+            try:
+                url = vcs.run(name, "git", "remote", "get-url", "origin", check=False).stdout or ""
+            except Exception:  # noqa: BLE001
+                url = ""
+            if host := origin_host(url):
+                hosts.setdefault(host, name)
+    if not hosts:
+        label = f"{ws.vcs_prefix} glab auth status".strip()
+        return [_fail("cli.glab", "CLIs", label, "not checked: no repo with an origin remote found yet", blocking=False)
+                if first is None or not repos else
+                _fail("cli.glab", "CLIs", label, "not checked: the repos in workspace.yaml have no origin remote", blocking=False)]
+    out = []
+    for host, repo in hosts.items():
+        label = f"{ws.vcs_prefix} glab auth status --hostname {host}".strip()
+        cid = "cli.glab" if len(hosts) == 1 else f"cli.glab.{host}"
+        try:
+            r = vcs.run(repo, "glab", "auth", "status", "--hostname", host, check=False)
+            text = (r.stdout or r.stderr or "").strip()[:200]
+            out.append(_ok(cid, "CLIs", label, text or "logged in") if r.returncode == 0 else
+                       _fail(cid, "CLIs", label, f"`{label}` failed: {text}",
+                             f"Create a personal access token on {host} (scopes: api, read_repository, write_repository), then "
+                             f"run `glab auth login --hostname {host}`."))
+        except Exception as e:  # noqa: BLE001
+            out.append(_fail(cid, "CLIs", label, f"`{label}` failed: {e}"))
+    return out
+
+
 def vcs_checks(ws, vcs, repos: list[str], glab: bool = True) -> tuple[list[Check], list[str]]:
     """git/glab through rtk, then each repo: a git repo whose origin is reachable. Returns (checks, reachable repos)."""
     out, ok_repos = [], []
     if not repos:
         return out, ok_repos
     first = next((r for r in repos if Path(ws.repos[r].path).is_dir()), None)
-    for args in (("git", "--version"), ("glab", "auth", "status"))[:2 if glab else 1]:
-        label = f"{ws.vcs_prefix} {' '.join(args)}".strip()
-        if first is None:
-            out.append(_fail(f"cli.{args[0]}", "CLIs", label, "not checked: no repo folder in workspace.yaml exists yet", blocking=False))
-            continue
+    label = f"{ws.vcs_prefix} git --version".strip()
+    if first is None:
+        out.append(_fail("cli.git", "CLIs", label, "not checked: no repo folder in workspace.yaml exists yet", blocking=False))
+    else:
         try:
-            r = vcs.run(first, *args, check=False)
-            out.append(_ok(f"cli.{args[0]}", "CLIs", label, (r.stdout or "").strip()[:200]) if r.returncode == 0 else
-                       _fail(f"cli.{args[0]}", "CLIs", label, f"`{label}` failed: {(r.stderr or r.stdout).strip()[:200]}",
-                             "Install it and log in (`glab auth login`)." if args[0] == "glab" else ""))
+            r = vcs.run(first, "git", "--version", check=False)
+            out.append(_ok("cli.git", "CLIs", label, (r.stdout or "").strip()[:200]) if r.returncode == 0 else
+                       _fail("cli.git", "CLIs", label, f"`{label}` failed: {(r.stderr or r.stdout).strip()[:200]}"))
         except Exception as e:  # noqa: BLE001
-            out.append(_fail(f"cli.{args[0]}", "CLIs", label, f"`{label}` failed: {e}"))
+            out.append(_fail("cli.git", "CLIs", label, f"`{label}` failed: {e}"))
+    if glab:
+        out += glab_auth_checks(ws, vcs, repos, first)
     for name in repos:
         cfg = ws.repos[name]
         if not Path(cfg.path, ".git").exists():
