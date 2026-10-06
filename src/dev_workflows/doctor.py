@@ -158,7 +158,7 @@ def claude_code_mcp_checks(ws, servers: dict | None = None) -> list[Check]:
     if not ws.claude_code_mcp:
         return []
     from .jira_implement.claude_code_mcp import cached_init, claude_code_servers
-    group = {"jira": "Jira MCP", "confluence": "Confluence MCP", "playwright": "Playwright MCP"}
+    group = {"jira": "Jira MCP", "confluence": "Confluence MCP", "playwright": "Playwright MCP", "mysql": "MySQL MCP"}
     try:
         servers = servers if servers is not None else claude_code_servers(cached_init())
     except Exception as e:  # noqa: BLE001
@@ -177,6 +177,58 @@ def claude_code_mcp_checks(ws, servers: dict | None = None) -> list[Check]:
                              "Run `claude`, then `/mcp`, and sign in to it (account connectors: claude.ai > Settings > Connectors)."))
         else:
             out.append(_ok(f"cc.{use}", group[use], label, f"connected, {len(info['tools'])} tools"))
+    return out
+
+
+def sql_checks(ws, gateway=None) -> list[Check]:
+    """The dev MySQL MCP behind devflow-sql, when one is configured: reachable, reconnects after a drop, writes
+    refused. Optional for runs, so nothing here blocks one. Only read statements are ever sent."""
+    import time
+
+    from .jira_implement.mcp_config import sql_gateway
+    from .jira_implement.sql_mcp import PROXY_NAME
+    g = "MySQL MCP"
+    if gateway is None:
+        if not (getattr(ws, "sql", None) or {}).get("server") and not ws.claude_code_mcp.get("mysql"):
+            return []
+        try:
+            gateway = sql_gateway(ws)
+        except ValueError as e:
+            return [_fail("sql.server", g, "MySQL MCP config", str(e), "Fix sql / claude_code_mcp.mysql in workspace.yaml.",
+                          blocking=False)]
+        if gateway is None:
+            return []
+    out = []
+    try:
+        tool, arg = gateway.query_tool()
+        out.append(_ok("sql.server", g, f"{gateway.name} query tool", f"{tool}({arg})"))
+        started = time.monotonic()
+        gateway.query("SELECT 1")
+        out.append(_ok("sql.ping", g, "SELECT 1", f"{(time.monotonic() - started) * 1000:.0f} ms"))
+        gateway.up.drop()
+        before = gateway.up.connects
+        gateway.query("SELECT 1")
+        out.append(_ok("sql.reconnect", g, "Reconnects after a drop", "session closed on purpose, next query reconnected")
+                   if gateway.up.connects > before else
+                   _warn("sql.reconnect", g, "Reconnects after a drop", "the query after the drop did not open a new session"))
+    except Exception as e:  # noqa: BLE001
+        out.append(_fail("sql.ping", g, "SELECT 1", str(e)[:300], "Check the MySQL MCP with `claude mcp list` and that the dev "
+                         "DB is up; set sql.query_tool if its query tool was not found.", blocking=False))
+        gateway.up.close()
+        return out
+    try:
+        gateway.query("DELETE FROM devflow_doctor_probe")
+        out.append(_fail("sql.read_only", g, "Writes refused", "a DELETE was not refused", blocking=False))
+    except PermissionError:
+        out.append(_ok("sql.read_only", g, "Writes refused", f"{PROXY_NAME} lets only read statements through (nothing was sent)"))
+    try:
+        grants = gateway.query("SHOW GRANTS").upper()
+        if re.search(r"ALL PRIVILEGES|\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE)\b", grants):
+            out.append(_warn("sql.grants", g, "Database user", "this DB user can write; devflow still sends only reads",
+                             "A read-only DB user for the MCP is safer."))
+    except Exception:  # noqa: BLE001 - some servers refuse SHOW GRANTS; that's fine
+        pass
+    gateway.up.close()
     return out
 
 
@@ -335,7 +387,7 @@ def run(ws, deps=None, repos: list[str] | None = None, which: Callable = shutil.
         confluence = ConfluenceReader(conf_mcp, ws.confluence_tools) if conf_mcp is not None else None  # read-only
     checks = ai_checks() + tool_checks(ws, which, repos)
     if deps is None:
-        checks += claude_code_mcp_checks(ws)
+        checks += claude_code_mcp_checks(ws) + sql_checks(ws)
     checks += mcp_checks(ws, jira, confluence, need_confluence=not review)
     checks += [c for c in jira_access_checks(ws, jira, source) if c.id != "mcp.jira.setup"]
     if review and not any(c.id == "mcp.playwright" for c in checks):
@@ -399,7 +451,7 @@ def render(checks: list[Check]) -> str:
         sel = [c for c in checks if c.group == g]
         if sel:
             lines.append(f"\n{g}")
-            lines += [f"  {marks[c.status]} {c.label}: {c.detail}" + (f"\n      fix: " + c.fix.replace("\n", "\n      ") if c.fix and c.status != "ok" else "") for c in sel]
+            lines += [f"  {marks[c.status]} {c.label}: {c.detail}" + ("\n      fix: " + c.fix.replace("\n", "\n      ") if c.fix and c.status != "ok" else "") for c in sel]
     s = summary(checks)
     lines.append(f"\n{s['ok']} ok, {s['warn']} warnings, {s['fail']} failures ({s['blocking']} blocking)")
     return "\n".join(lines).strip()

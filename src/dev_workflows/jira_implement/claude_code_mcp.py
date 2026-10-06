@@ -292,7 +292,7 @@ def confluence_mcp(ws, init: Callable[[], dict] = cached_init, run: Callable = s
 
 
 # --- setup: picking the servers ----------------------------------------------------------------------------------
-USES = ("jira", "confluence", "playwright")
+USES = ("jira", "confluence", "playwright", "mysql")
 
 
 def suggest(servers: dict[str, dict]) -> dict[str, str]:
@@ -302,8 +302,12 @@ def suggest(servers: dict[str, dict]) -> dict[str, str]:
         names = {_norm(t) for t in info["tools"]}
         if use == "playwright":
             return any(n.startswith("browser") for n in names)
+        if use == "mysql":
+            from .sql_mcp import QUERY_TOOLS
+            return bool(names & set(QUERY_TOOLS) - {"query", "execute"})
         return bool(names & (JIRA_EQUIVALENTS["get_issue"] if use == "jira" else CONFLUENCE_EQUIVALENTS["get_page"]))
-    words = {"jira": ("jira", "atlassian"), "confluence": ("confluence", "atlassian"), "playwright": ("playwright",)}
+    words = {"jira": ("jira", "atlassian"), "confluence": ("confluence", "atlassian"), "playwright": ("playwright",),
+             "mysql": ("mysql", "mariadb")}
     out = {}
     for use in USES:
         by_tools = [n for n, i in servers.items() if i["status"] == "connected" and fits(i, use)]

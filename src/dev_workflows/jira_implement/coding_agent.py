@@ -4,6 +4,7 @@ Every tool call Claude Code makes passes `tool_policy` (a PreToolUse hook):
 - files: only inside the in-scope repo it was launched for
 - git/glab: only `rtk git` read commands (status/diff/log/show/blame/grep); no commits, pushes, branches or glab
 - MCP: no write tools on any server (Jira and Confluence writes belong to the workflow, Confluence never)
+- SQL: the dev MySQL MCP only through devflow-sql (read statements only, reconnects); its own tools are denied
 """
 import asyncio
 import json
@@ -12,12 +13,14 @@ import re
 import shlex
 import time
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Protocol
 
 from .. import telemetry
 from ..routing import Routing, skills_hint
+from .claude_code_mcp import tool_prefix
 from .confluence import is_write_tool
 from .scope import ScopeGuard
+from .sql_mcp import NOTE_TAG, PROXY_NAME, read_only_problem
 
 READ_ONLY_GIT = {"status", "diff", "log", "show", "blame", "grep", "ls-files", "rev-parse", "branch", "merge-base"}
 FILE_TOOLS = {"Read": "file_path", "Edit": "file_path", "MultiEdit": "file_path", "Write": "file_path",
@@ -27,9 +30,10 @@ MCP_WRITE = re.compile(r"(create|update|edit|delete|remove|add_|_add|transition|
 
 
 def tool_policy(tool: str, tool_input: dict, roots: list[str], read_only: bool = False,
-                read_roots: list[str] = ()) -> tuple[bool, str]:
+                read_roots: list[str] = (), deny_mcp: tuple[str, ...] = ()) -> tuple[bool, str]:
     """Pure policy check (unit-tested). Returns (allowed, reason). `read_roots` (the global skill folders) may be
-    read and their scripts run, never edited."""
+    read and their scripts run, never edited. `deny_mcp` names MCP servers the agent must not call directly (the
+    MySQL MCP behind devflow-sql)."""
     def inside(p: str, among=None) -> bool:
         real = os.path.realpath(p)
         return any(real == r or real.startswith(r + os.sep) for r in (roots if among is None else among))
@@ -66,6 +70,11 @@ def tool_policy(tool: str, tool_input: dict, roots: list[str], read_only: bool =
                     return False, f"{w} is outside the repos in scope"
         return True, ""
     if tool.startswith("mcp__"):
+        if any(s and tool.startswith(tool_prefix(s)) for s in deny_mcp):
+            return False, f"use the {PROXY_NAME} tools for the database (read-only, reconnects when it drops)"
+        if tool == f"{tool_prefix(PROXY_NAME)}sql_query":
+            problem = read_only_problem(str(tool_input.get("sql", "")))
+            return (False, f"read-only database: {problem}") if problem else (True, "")
         if "confluence" in tool.lower() and is_write_tool(tool):
             return False, "Confluence is strictly read-only"
         if MCP_WRITE.search(tool.split("__")[-1]) and "browser" not in tool.lower():
@@ -163,11 +172,22 @@ RULES = (
     "- Never touch CI/CD configuration or pipelines unless the task explicitly lists that file.\n"
     "- If the task needs a change in a repository you were not given, do not make it: report it in out_of_scope_needs.\n"
 )
+SQL_RULES = (
+    f"\nDev database: the {PROXY_NAME} MCP tools (sql_schema, sql_query, sql_status) give read-only access to the "
+    "developer's dev MySQL database. When the work touches endpoint SQL, queries, tables or data, check the real "
+    "tables, columns, types, indexes and sample rows with them instead of guessing, and EXPLAIN new queries. Only one "
+    "SELECT/SHOW/DESCRIBE/EXPLAIN per call. Never try to change data or schema there: write migrations, ALTERs, data "
+    "fixes and seed scripts as files in the repository's own migrations folder (if it has none, under "
+    "sql/<ticket key>/) for the developer to review and run. If the database is unavailable, carry on from the code "
+    "and say in your summary that the live schema was not checked.\n"
+)
 
 
 class ClaudeCodeAgent:
-    def __init__(self, scope: ScopeGuard, routing: Routing | None = None, mcp_servers: dict | None = None, max_turns: int = 200):
+    def __init__(self, scope: ScopeGuard, routing: Routing | None = None, mcp_servers: dict | None = None, max_turns: int = 200,
+                 sql_upstream: str = ""):
         self.scope, self.routing, self.mcp_servers, self.max_turns = scope, routing or Routing(), mcp_servers or {}, max_turns
+        self.sql_upstream = sql_upstream  # the MySQL MCP behind devflow-sql: its own tools are denied to the agent
 
     def implement(self, repo: str, path: str, instructions: str, step: str = "implement", escalate: bool = False) -> CodingResult:
         out = self._run([path], f"{RULES}\nRepository: {repo} ({path})\n\n{instructions}", IMPLEMENT_SCHEMA, read_only=False,
@@ -203,22 +223,38 @@ class ClaudeCodeAgent:
         model = self.routing.model(step, escalate=escalate)
         skill_roots = [os.path.realpath(d) for d in self.routing.registry.dirs]
         prompt += skills_hint(self.routing.skills(step, repo_path=roots[0]))
+        has_sql = PROXY_NAME in self.mcp_servers
+        if has_sql:
+            prompt += SQL_RULES
+        deny_mcp = (self.sql_upstream,) if self.sql_upstream else ()
 
         ctx = telemetry.current()  # the run and node this agent works for (activity and usage are recorded there)
 
         async def pre_tool_use(hook_input, tool_use_id, context):
             tool, tool_input = hook_input["tool_name"], hook_input.get("tool_input") or {}
-            allowed, reason = tool_policy(tool, tool_input, roots, read_only, skill_roots)
+            allowed, reason = tool_policy(tool, tool_input, roots, read_only, skill_roots, deny_mcp)
             if allowed:
                 return {}
             telemetry.record_activity({"tool": tool, "detail": describe_tool(tool, tool_input, roots), "denied": True,
                                        "reason": reason}, ctx=ctx, repo=repo)
             return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}
 
+        async def post_tool_use(hook_input, tool_use_id, context):
+            """devflow-sql's reconnect notes go to the live activity log, so a flaky dev DB is visible in the UI."""
+            tool = hook_input.get("tool_name", "")
+            if tool.startswith(tool_prefix(PROXY_NAME)):
+                text = json.dumps(hook_input.get("tool_response"), default=str)
+                for note in re.findall(re.escape(NOTE_TAG) + r"\s*([^\]\\]*)", text):
+                    telemetry.record_activity({"tool": tool, "detail": f"database: {note}"[:300]}, ctx=ctx, repo=repo)
+            return {}
+
+        hooks = {"PreToolUse": [HookMatcher(matcher=None, hooks=[pre_tool_use])]}
+        if has_sql:
+            hooks["PostToolUse"] = [HookMatcher(matcher=None, hooks=[post_tool_use])]
         options = ClaudeAgentOptions(
             cwd=roots[0], add_dirs=roots[1:], model=model, effort=self.routing.effort(model), max_turns=self.max_turns,
             permission_mode="acceptEdits", setting_sources=["user", "project"], mcp_servers=self.mcp_servers,
-            hooks={"PreToolUse": [HookMatcher(matcher=None, hooks=[pre_tool_use])]},
+            hooks=hooks,
             output_format={"type": "json_schema", "schema": schema},
         )
 

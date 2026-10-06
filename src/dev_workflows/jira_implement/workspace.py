@@ -69,6 +69,9 @@ class Workspace:
     # MCP servers of the logged-in Claude Code to use instead of devflow's own client: {jira, confluence, playwright}
     # -> server name as `claude mcp list` shows it. Blank = the default (mcp_servers here, else Claude Code's config).
     claude_code_mcp: dict = field(default_factory=dict)
+    # The dev MySQL MCP behind devflow-sql (read-only, reconnects): server, query_tool, timeout_s, max_retries,
+    # idle_ping_s, max_rows, deny_hosts. See jira_implement.sql_mcp.
+    sql: dict = field(default_factory=dict)
 
     def repo(self, name: str) -> RepoConfig:
         return self.repos[name]
@@ -119,6 +122,7 @@ def load_workspace(path: str | Path) -> Workspace:
         ai=dict(raw.get("ai") or {}),
         standup=dict(raw.get("standup") or {}),
         claude_code_mcp={k: str(v).strip() for k, v in (raw.get("claude_code_mcp") or {}).items() if v and str(v).strip()},
+        sql=dict(raw.get("sql") or {}),
     )
 
 

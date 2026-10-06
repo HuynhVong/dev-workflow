@@ -98,6 +98,37 @@ that reads `JIRA_URL` or `JIRA_API_TOKEN` from the shell or `.env` sees them; th
 (`type: sse`) servers are supported. When a call fails, Preflight, `devflow doctor` and the UI show the server's
 real error (and the end of its stderr if it crashed at start-up), not a generic "TaskGroup" message.
 
+### Dev database (MySQL MCP, optional)
+
+For tickets that need SQL behind an endpoint, devflow can give the coding agents read-only access to your dev MySQL
+database through your MySQL MCP. Pick it in `devflow setup` (or `--mysql-mcp NAME`); it is saved as
+`claude_code_mcp.mysql`. It must be a server with a local config (added with `claude mcp add`, or under
+`mcp_servers` in `workspace.yaml` with `sql: {server: NAME}`), because devflow starts it itself.
+
+The agents never get the MySQL MCP directly (its tools are denied). They get `devflow-sql`, a small proxy with
+`sql_schema`, `sql_query` and `sql_status` that:
+
+- lets through only one read statement per call (SELECT, WITH ... SELECT, SHOW, DESCRIBE, EXPLAIN) and adds a LIMIT
+  to a SELECT without one. Migrations, ALTERs and data scripts are written as files (the repo's migrations folder,
+  else `sql/<ticket>/`) for you to review and run; the workflow never runs them;
+- keeps one session open, and when the MCP sleeps, drops the MySQL connection ("gone away", 2006, 2013...), hangs
+  past `timeout_s` or dies, restarts it and retries the same query, waiting 1 s, 2 s, 4 s, up to `max_retries`;
+- pings with `SELECT 1` first after `idle_ping_s` of quiet;
+- when the database stays down, tells the agent to carry on from the code and say the live schema was not checked.
+
+Reconnects show in the run's activity log. `devflow doctor` runs `SELECT 1`, closes the session on purpose to prove
+the reconnect works, and confirms writes are refused. Settings (all optional):
+
+```yaml
+sql:
+  query_tool: ""        # the server's query tool; blank = found by name (mysql_query, execute_sql, query...)
+  timeout_s: 30
+  max_retries: 3
+  idle_ping_s: 240
+  max_rows: 200
+  deny_hosts: []        # refuse to start if the server's config mentions one of these hosts (e.g. prod)
+```
+
 ### Models
 
 Every AI step picks its own model at run time (defaults in `routing.py`, overridable under `ai:` in `workspace.yaml`):
@@ -266,6 +297,7 @@ src/dev_workflows/
     mcp_client.py        devflow's own MCP client (stdio, HTTP, SSE); reports the server's real error
     mcp_config.py        picks the client per server: claude_code_mcp, workspace.yaml, or Claude Code's config
     claude_code_mcp.py   Jira/Confluence through the logged-in Claude Code's MCP servers (`claude -p`, one tool)
+    sql_mcp.py           devflow-sql: read-only proxy in front of the dev MySQL MCP, with reconnect and retry
     vcs.py               the only place git/glab run: always `rtk git|glab`, deny-list, scope check
     scope.py             frozen repo allow-list (--repos)
     coding_agent.py      Claude Code (Agent SDK) launcher + per-tool policy hook
