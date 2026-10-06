@@ -183,8 +183,17 @@ SQL_RULES = (
 )
 
 
+# The built-in tools an agent session gets. Claude Code's full set adds long definitions (sub-agents, web, todo,
+# notebook...) that every turn of every session re-reads, and a sub-agent starts a whole second session. MCP tools
+# (Playwright, the SQL proxy) are not built-in tools, so this list does not affect them.
+AGENT_TOOLS = ["Read", "Edit", "MultiEdit", "Write", "Glob", "Grep", "Bash", "Skill"]
+READ_ONLY_TOOLS = ["Read", "Glob", "Grep", "Bash", "Skill"]
+# Every turn re-reads the session's whole context, so the turn count multiplies the cost. Exploring a repo is shallow.
+EXPLORE_TURNS = 30
+
+
 class ClaudeCodeAgent:
-    def __init__(self, scope: ScopeGuard, routing: Routing | None = None, mcp_servers: dict | None = None, max_turns: int = 200,
+    def __init__(self, scope: ScopeGuard, routing: Routing | None = None, mcp_servers: dict | None = None, max_turns: int = 120,
                  sql_upstream: str = "", strict_mcp: bool = True):
         self.scope, self.routing, self.mcp_servers, self.max_turns = scope, routing or Routing(), mcp_servers or {}, max_turns
         # Only `mcp_servers` are loaded, not every server in the developer's Claude Code config: each loaded server's
@@ -200,7 +209,7 @@ class ClaudeCodeAgent:
 
     def explore(self, repo: str, path: str, question: str, step: str = "discover_repos") -> CodingResult:
         out = self._run([path], f"{RULES}\nThis step is READ-ONLY: do not edit files.\nRepository: {repo} ({path})\n\n{question}", EXPLORE_SCHEMA,
-                        read_only=True, step=step, repo=repo)
+                        read_only=True, step=step, repo=repo, max_turns=EXPLORE_TURNS)
         return CodingResult(ok=bool(out.get("confirmed")), summary=out.get("notes", ""), files_changed=out.get("relevant_files", []),
                             out_of_scope_needs=out.get("out_of_scope_needs", []), findings=out, raw=json.dumps(out))
 
@@ -217,7 +226,7 @@ class ClaudeCodeAgent:
         return CodingResult(ok=bool(out.get("passed")), findings=out, raw=json.dumps(out))
 
     def _run(self, roots: list[str], prompt: str, schema: dict, read_only: bool, step: str, escalate: bool = False,
-             repo: str = "") -> dict:
+             repo: str = "", max_turns: int | None = None) -> dict:
         from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, HookMatcher, ResultMessage, ToolUseBlock, query
 
         roots = [os.path.realpath(r) for r in roots]
@@ -255,7 +264,8 @@ class ClaudeCodeAgent:
         if has_sql:
             hooks["PostToolUse"] = [HookMatcher(matcher=None, hooks=[post_tool_use])]
         options = ClaudeAgentOptions(
-            cwd=roots[0], add_dirs=roots[1:], model=model, effort=self.routing.effort(model), max_turns=self.max_turns,
+            cwd=roots[0], add_dirs=roots[1:], model=model, effort=self.routing.effort(model),
+            max_turns=min(max_turns or self.max_turns, self.max_turns), tools=READ_ONLY_TOOLS if read_only else AGENT_TOOLS,
             permission_mode="acceptEdits", setting_sources=["user", "project"], mcp_servers=self.mcp_servers,
             hooks=hooks,
             output_format={"type": "json_schema", "schema": schema},

@@ -16,7 +16,7 @@ from ..llm import AsStep
 from . import dag as dagmod
 from . import worktrees
 from ..textutil import diffs_block
-from .graph import (CHECKPOINT_TITLES, release_run_worktrees, HIDDEN_NODES, SYSTEM, TICKET_FORM, TRANSIENT, Deps, GraphKit, _j, _tail, diff_digest, CROSS_REPO_DIFF, UPSTREAM_DIFF,
+from .graph import (CHECKPOINT_TITLES, release_run_worktrees, HIDDEN_NODES, SYSTEM, TICKET_FORM, TRANSIENT, Deps, GraphKit, _j, _tail, diff_digest, CROSS_REPO_DIFF, UPSTREAM_DIFF, check_fingerprint,
                     check_environment, merge_repos, route_feedback, run_repo_checks)
 from .jira import marker
 from .ledger import Effect, perform
@@ -299,6 +299,7 @@ def build_review_graph(deps: Deps, checkpointer=None):
         coder, vcs, cap, path = deps.coder(st), deps.vcs(st), ws.max_fix_attempts, payload["scope"][payload["repo"]]
         changed, mode = 0, rs["status"]
         feedback = list(rs.get("fix_instructions", []))
+        last_fail = ""
         while True:
             if mode in ("pending", "needs_fix"):
                 if rs.get("implemented"):
@@ -311,7 +312,9 @@ def build_review_graph(deps: Deps, checkpointer=None):
                 res = coder.implement(repo, path, step="targeted_fix", escalate=rs.get("fix_attempts_used", 0) >= cap, instructions=(
                     f"Ticket {payload['ticket_key']}: address code review comments on branch {payload['ticket_key']}.\n{upstream}"
                     "<fix_this>\n" + "\n---\n".join(feedback) + "\n</fix_this>\n"
-                    "Change only what these comments need. Keep the rest of the branch as it is. Update tests when behaviour changes."))
+                    "Change only what these comments need. Keep the rest of the branch as it is. Update tests when behaviour changes.\n"
+                    "Before you finish, run these checks in the repository and fix what they report:\n"
+                    + "\n".join(f"- {n}: {c}" for n, c in ws.repo(repo).check_commands)))
                 rs["implemented"], changed = True, changed + 1
                 rs["summary"] = res.summary
                 store.audit(payload["payload_run_id"], "fix", {"repo": repo, "attempt": rs.get("fix_attempts_used", 0), "ok": res.ok})
@@ -323,7 +326,11 @@ def build_review_graph(deps: Deps, checkpointer=None):
             if mode == "needs_checks":
                 rs["status"] = "blocked_budget"
                 break
-            mode = "needs_fix"
+            fail = check_fingerprint(results)
+            if mode == "needs_fix" and fail == last_fail:  # the same failure after a whole agent session: stop spending
+                rs["status"] = "blocked_budget"
+                break
+            last_fail, mode = fail, "needs_fix"
             feedback = [f"Checks failed:\n{_j(results)}"]
         rs["diff_files"] = vcs.changed_files(repo)
         return {"repos": {repo: rs}, "code_version": changed}
@@ -334,7 +341,7 @@ def build_review_graph(deps: Deps, checkpointer=None):
     checkpoint("budget_exhausted", lambda s: {
         "repos": {n: {"fix_attempts_used": r.get("fix_attempts_used"), "checks": r.get("checks"), "summary": r.get("summary")}
                   for n, r in s["repos"].items() if r["status"] in ("blocked_budget", "pending", "needs_fix")},
-        "hint": f"These repos used their {ws.max_fix_attempts} automated fix attempts for this run. Fix them by hand, then "
+        "hint": f"These repos used their {ws.max_fix_attempts} automated fix attempts for this run, or a fix attempt left the checks failing the same way. Fix them by hand, then "
                 "choose fixed_by_hand (checks re-run with no automated edit), or abort."}, ["fixed_by_hand", "abort"])
     node("mark_hand_fixed", lambda s: {"repos": {n: {"status": "needs_checks"} for n, r in s["repos"].items() if r["status"] == "blocked_budget"}})
     g.add_conditional_edges("budget_exhausted_wait", lambda s: "abort" if choice(s) == "abort" else "mark_hand_fixed", ["abort", "mark_hand_fixed"])

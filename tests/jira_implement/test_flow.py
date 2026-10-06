@@ -75,8 +75,19 @@ def test_abort_at_plan_has_no_side_effects(tmp_path):
     assert sh("git", "-C", ws.repos["api"].path, "branch", "--list", "AQS-1") == ""
 
 
-def test_fix_budget_is_run_wide_and_pauses_at_three(tmp_path):
+def test_a_fix_that_leaves_the_same_failure_stops_after_one_attempt(tmp_path):
     ws, env = make_env(tmp_path, repos=("api",), checks={"api": "false"})
+    coder = FakeCoder()
+    deps, store, _ = make_deps(tmp_path, ws, env, FakeLLM(["api"], []), coder)
+    g, cfg, out = start(tmp_path, ws, deps)
+    out = answer(g, cfg, choice="approve")
+    assert at(out) == "budget_exhausted"
+    assert [st for st, _, _ in coder.steps] == ["implement", "targeted_fix"]  # no second and third session for the same error
+    assert g.get_state(cfg).values["repos"]["api"]["fix_attempts_used"] == 1
+
+
+def test_fix_budget_is_run_wide_and_pauses_at_three(tmp_path):
+    ws, env = make_env(tmp_path, repos=("api",), checks={"api": "echo $$ | tr 0-9 a-j; false"})
     coder = FakeCoder()
     deps, store, _ = make_deps(tmp_path, ws, env, FakeLLM(["api"], []), coder)
     g, cfg, out = start(tmp_path, ws, deps)

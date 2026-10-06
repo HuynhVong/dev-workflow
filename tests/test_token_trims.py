@@ -94,3 +94,18 @@ def test_ticket_images_are_capped_and_oversized_ones_skipped(tmp_path):
     (tmp_path / "notes.txt").write_text("x")
     got = usable_images([str(big), str(tmp_path / "notes.txt"), str(tmp_path / "missing.png"), *paths])
     assert got == paths[:MAX_IMAGES]
+
+
+def test_agent_sessions_get_only_the_built_in_tools_they_need():
+    from dev_workflows.jira_implement.coding_agent import AGENT_TOOLS, EXPLORE_TURNS, READ_ONLY_TOOLS
+    assert not {"Task", "Agent", "WebFetch", "WebSearch", "TodoWrite"} & set(AGENT_TOOLS)
+    assert not {"Edit", "MultiEdit", "Write"} & set(READ_ONLY_TOOLS) and EXPLORE_TURNS < 120
+
+
+def test_check_fingerprint_ignores_numbers_but_not_which_check_failed():
+    from dev_workflows.jira_implement.graph import check_fingerprint
+    a = [{"check": "lint", "ok": True, "output": ""}, {"check": "test", "ok": False, "output": "3 failed in 1.2s"}]
+    b = [{"check": "test", "ok": False, "output": "3 failed in 9.9s"}]
+    c = [{"check": "lint", "ok": False, "output": "3 failed in 1.2s"}]
+    assert check_fingerprint(a) == check_fingerprint(b) != check_fingerprint(c)
+    assert check_fingerprint([{"check": "test", "ok": True, "output": ""}]) == ""

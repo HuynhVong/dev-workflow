@@ -359,6 +359,13 @@ def check_environment(deps: "Deps", state: dict, need_confluence: bool, steps: t
     return scope, warnings
 
 
+def check_fingerprint(results: list[dict]) -> str:
+    """Which check failed and how, with numbers (timings, line counts) blanked, to tell a fix attempt that changed
+    nothing from one that made progress."""
+    bad = next((r for r in results if not r["ok"]), None)
+    return "" if bad is None else f"{bad['check']}:{re.sub(r'[0-9]+', '#', bad['output'][-1500:])}"
+
+
 def run_repo_checks(deps: "Deps", repo: str, scope: dict) -> tuple[bool, list[dict]]:
     """The repo's own lint/typecheck/test/build in the run's worktree; the first failure stops the list."""
     results = []
@@ -733,6 +740,7 @@ def build_graph(deps: Deps, checkpointer=None):
         changed = 0
         mode = rs["status"]
         feedback: list[str] = list(rs.get("fix_instructions", []))
+        last_fail = ""
         while True:
             if mode in ("pending", "needs_fix"):
                 if rs.get("implemented"):
@@ -741,7 +749,7 @@ def build_graph(deps: Deps, checkpointer=None):
                         break
                     rs["fix_attempts_used"] = rs.get("fix_attempts_used", 0) + 1
                 upstream = {u: diff_digest(vcs.diff_against(u, f"origin/{ws.repo(u).base_branch}"), UPSTREAM_DIFF) for u in payload["upstream"]}
-                instructions = _implement_prompt(payload, repo, rs, feedback, upstream)
+                instructions = _implement_prompt(payload, repo, rs, feedback, upstream, ws.repo(repo).check_commands)
                 res = coder.implement(repo, path, instructions, step="targeted_fix" if rs.get("fix_attempts_used") else "implement",
                                       escalate=rs.get("fix_attempts_used", 0) >= cap)  # the last attempt gets the stronger model
                 rs["implemented"], changed = True, changed + 1
@@ -760,12 +768,16 @@ def build_graph(deps: Deps, checkpointer=None):
             if mode == "needs_checks":  # you fixed it by hand; a failure goes back to you, not to the agent
                 rs["status"] = "blocked_budget"
                 break
-            mode = "needs_fix"
+            fail = check_fingerprint(results)
+            if mode == "needs_fix" and fail == last_fail:  # a whole agent session later, the same failure: more tries cost more for nothing
+                rs["status"] = "blocked_budget"
+                break
+            last_fail, mode = fail, "needs_fix"
             feedback = [f"Checks failed:\n{_j(results)}"]
         rs["diff_files"] = vcs.changed_files(repo)
         return {"repos": {repo: rs}, "code_version": changed}
 
-    def _implement_prompt(payload, repo, rs, feedback, upstream) -> str:
+    def _implement_prompt(payload, repo, rs, feedback, upstream, checks=()) -> str:
         plan = payload["plan"]
         parts = [f"Ticket {payload['ticket_key']}: {payload['analysis']['summary']}",
                  f"<acceptance_criteria>{_j(payload['analysis']['acceptance_criteria'])}</acceptance_criteria>",
@@ -780,6 +792,9 @@ def build_graph(deps: Deps, checkpointer=None):
             parts.append("<fix_this>\n" + "\n---\n".join(feedback) + "\n</fix_this>\nFix exactly this; keep the rest of the work.")
         else:
             parts.append("Implement the tasks for this repository, including tests. Match the repo's conventions.")
+        if checks:  # a failed check sent back later costs a whole new session, so the agent runs them before it finishes
+            parts.append("Before you finish, run these checks in the repository and fix what they report; the workflow runs "
+                         "them again after you:\n" + "\n".join(f"- {name}: {cmd}" for name, cmd in checks))
         return "\n".join(parts)
 
     node("implement_repo", implement_repo)
@@ -788,7 +803,7 @@ def build_graph(deps: Deps, checkpointer=None):
     checkpoint("budget_exhausted", lambda s: {
         "repos": {n: {"fix_attempts_used": r.get("fix_attempts_used"), "checks": r.get("checks"), "summary": r.get("summary")}
                   for n, r in s["repos"].items() if r["status"] == "blocked_budget"},
-        "hint": "These repos used their 3 automated fix attempts for this run. Fix them by hand, then choose fixed_by_hand "
+        "hint": "These repos used their 3 automated fix attempts for this run, or a fix attempt left the checks failing the same way. Fix them by hand, then choose fixed_by_hand "
                 "(checks re-run with no automated edit), or abort."}, ["fixed_by_hand", "abort"])
     node("mark_hand_fixed", lambda s: {"repos": {n: {"status": "needs_checks"} for n, r in s["repos"].items() if r["status"] == "blocked_budget"}})
     g.add_conditional_edges("budget_exhausted_wait", lambda s: "abort" if choice(s) == "abort" else "mark_hand_fixed",
