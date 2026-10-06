@@ -4,7 +4,9 @@
 
 Jira workflows (need workspace.yaml, see workspace.example.yaml):
   devflow standup [--from 2026-10-01] [--to 2026-10-03] [--template report.md] [--no-input]
-  devflow setup [--ticket AQS-5512]       first run: Jira MCP (required), models per step, global skills to install
+  devflow setup [--ticket AQS-5512] [--jira-mcp NAME] [--confluence-mcp NAME] [--playwright-mcp NAME]
+                                          first run: which Claude Code MCP servers to use, Jira MCP (required),
+                                          models per step, global skills to install
   devflow implement AQS-5512 [--repos api-service,web-portal] [--no-input]
   devflow address-review AQS-5512 [--repos api-service,web-portal] [--no-input]
   devflow review AQS-5512 --commit web-portal=3f9a1c2 [--commit api-service=88be0d4,a17c3e9] [--app-url URL] [--no-input]
@@ -81,6 +83,50 @@ def _csv(value):
     return [x.strip() for x in (value or "").split(",") if x.strip()]
 
 
+def _choose_claude_code_mcp(a, ws) -> bool:
+    """Setup step: which MCP servers of the logged-in Claude Code devflow uses for Jira, Confluence and Playwright.
+    Saved under claude_code_mcp in workspace.yaml; a blank answer keeps the default. Returns True if it changed."""
+    import os
+
+    from .jira_implement.claude_code_mcp import USES, claude_code_servers, suggest
+    from .jira_implement.workspace import set_claude_code_mcp
+    given = {u: getattr(a, f"{u}_mcp") for u in USES}
+    ask = not a.no_input and sys.stdin.isatty() and any(v is None for v in given.values())
+    if not ask and all(v is None for v in given.values()):
+        return False
+    try:
+        servers = claude_code_servers()
+    except Exception as e:  # noqa: BLE001
+        print(f"Claude Code MCP servers: could not list them ({e}); keeping workspace.yaml as is.\n")
+        return False
+    print("MCP servers in your Claude Code login:")
+    for name, info in servers.items() or {"(none)": {"status": "", "tools": []}}.items():
+        print(f"  - {name}: {info['status']}" + (f", {len(info['tools'])} tools" if info["tools"] else ""))
+    hint = suggest(servers)
+    choice = {}
+    for use in USES:
+        current = ws.claude_code_mcp.get(use, "")
+        if given[use] is not None:
+            choice[use] = given[use].strip()
+            continue
+        default = current or hint[use]
+        if not ask:
+            choice[use] = current
+            continue
+        answer = input(f"{use.title()} via which Claude Code MCP? [{default or 'none: use the default'}] "
+                       "(Enter = keep, '-' = none): ").strip()
+        choice[use] = "" if answer == "-" else (answer or default)
+        if choice[use] and choice[use] not in servers:
+            print(f"    note: Claude Code has no server named '{choice[use]}' right now")
+    path = a.workspace or os.getenv("DEVFLOW_WORKSPACE", "workspace.yaml")
+    if choice == {u: ws.claude_code_mcp.get(u, "") for u in USES}:
+        print()
+        return False
+    set_claude_code_mcp(path, choice)
+    print(f"Saved claude_code_mcp in {path}: " + ", ".join(f"{u}={v or 'default'}" for u, v in choice.items()) + "\n")
+    return True
+
+
 def _add_implement_commands(sub) -> None:
     import json
 
@@ -123,12 +169,18 @@ def _add_implement_commands(sub) -> None:
     su = sub.add_parser("setup", help="first-time setup: Jira MCP (required), models per step, global Claude Code skills")
     su.add_argument("--workspace", help="path to workspace.yaml (default: $DEVFLOW_WORKSPACE or ./workspace.yaml)")
     su.add_argument("--ticket", help="a ticket key you can see, to prove the Jira MCP can read it")
+    for use in ("jira", "confluence", "playwright"):
+        su.add_argument(f"--{use}-mcp", metavar="NAME", default=None,
+                        help=f"Claude Code MCP server for {use.title()} (as `claude mcp list` names it); '' = default")
+    su.add_argument("--no-input", action="store_true", help="do not ask which Claude Code MCP servers to use")
 
     def do_setup(a):
         from . import doctor
         from .jira_implement.runner import load
         from .routing import Routing, setup_report
         ws = load(a.workspace)
+        if _choose_claude_code_mcp(a, ws):
+            ws = load(a.workspace)
         jira, source = doctor.jira_gateway(ws)
         checks = doctor.jira_access_checks(ws, jira, source, ticket=a.ticket or "")
         print("Jira MCP (required)\n" + "\n".join(

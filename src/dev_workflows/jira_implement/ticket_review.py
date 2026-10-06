@@ -22,6 +22,7 @@ from .confluence import page_ids_from_urls
 from .graph import SYSTEM, TRANSIENT, Deps, GraphKit, PreflightFailed, _j, _tail
 from .jira import IMAGE_EXT, JiraWriteRefused, marker
 from .ledger import Effect, perform
+from .mcp_config import has_playwright
 from .models import CommentDraft, Coverage, TestPlanDraft, TicketUnderstanding
 from .scope import ScopeGuard
 
@@ -150,7 +151,7 @@ def build_graph(deps: Deps, checkpointer=None):
                 gaps.append(f"{r}: {path} is not a git repository (fix `path` in workspace.yaml)")
         blocking = lambda checks: [c.detail for c in checks if c.status == "fail" and c.blocking]  # noqa: E731
         gaps += blocking(doctor.tool_checks(ws, deps.which, []))
-        if not any("playwright" in k.lower() for k in ws.mcp_servers):
+        if not has_playwright(ws):
             gaps.append("no Playwright MCP: add a `playwright` server under mcp_servers in workspace.yaml (npx @playwright/mcp@latest)")
         access = {"can_post": False, "can_attach": False, "reason": ""}
         try:

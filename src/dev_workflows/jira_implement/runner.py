@@ -22,7 +22,6 @@ from .address_review import build_review_graph
 from .graph import WORKFLOW, Deps, PreflightFailed, build_graph
 from .jira import JiraGateway
 from .ledger import Store
-from .mcp_client import StdioOrHttpMcp
 from .workspace import Workspace, load_workspace
 
 
@@ -48,15 +47,11 @@ class MissingMcp:
     call = lambda self, tool, args: self.list_tools()  # noqa: E731
 
 
-def _mcp(ws: Workspace, name: str):
-    return StdioOrHttpMcp(name, ws.mcp_servers[name]) if name in ws.mcp_servers else MissingMcp(name)
-
-
 def real_deps(ws: Workspace, store: Store) -> Deps:
-    from .mcp_config import resolve_jira_server
-    found = resolve_jira_server(ws)  # workspace.yaml, else the Jira MCP connected to Claude Code
-    jira_mcp = StdioOrHttpMcp(found[0], found[1]) if found else MissingMcp(ws.jira_server)
-    conf_mcp = jira_mcp if ws.confluence_server == ws.jira_server else _mcp(ws, ws.confluence_server)
+    from .mcp_config import confluence_mcp_for, jira_mcp_for
+    jira_mcp, _ = jira_mcp_for(ws)  # claude_code_mcp.jira, else workspace.yaml, else the Jira MCP in Claude Code's config
+    jira_mcp = jira_mcp or MissingMcp(ws.jira_server)
+    conf_mcp = confluence_mcp_for(ws, jira_mcp) or MissingMcp(ws.confluence_server)
     routing = Routing.from_config(ws.ai)
     return Deps(workspace=ws, store=store, llm=make_llm(routing), routing=routing,
                 jira=JiraGateway(jira_mcp, ws.jira_tools, ws.status_order),

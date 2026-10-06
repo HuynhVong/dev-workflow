@@ -15,7 +15,9 @@ Jira and Confluence. Run them from the `devflow` CLI or the local web app (`devf
 
 - Python 3.11+, and either a Claude Code login (Claude Pro or Max plan, no API key) or an `ANTHROPIC_API_KEY`
   (see [AI backend](#ai-backend)).
-- **Jira MCP** with read and write access, connected to Claude Code (`claude mcp add ...`) or listed in `workspace.yaml`.
+- **Jira MCP** with read and write access: a connector in your Claude Code login (for example the Atlassian
+  connector on a Pro plan), a server added with `claude mcp add ...`, or one listed in `workspace.yaml`
+  (see [MCP servers from your Claude Code login](#mcp-servers-from-your-claude-code-login)).
 - **Confluence MCP**. Read access is enough: every workflow treats Confluence as strictly read-only and never exposes
   its write tools.
 - **Playwright MCP**, for repos with a UI and for the ticket review.
@@ -45,7 +47,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env                          # optional: ANTHROPIC_API_KEY, or leave it out to use your Claude login
 cp workspace.example.yaml workspace.yaml      # list your repos, their checks and MCP servers
-devflow setup --ticket AQS-5512               # first-time setup
+devflow setup --ticket AQS-5512               # first-time setup (asks which Claude Code MCP servers to use)
 devflow doctor                                # every connection check, any time (also in the UI)
 pytest -q                                     # offline tests, no API key needed
 ```
@@ -71,6 +73,22 @@ can read tickets (and the one you name), and whether it can comment and attach f
 every step and which global Claude Code skills (`~/.claude/skills/<name>/SKILL.md`, or skills from installed plugins)
 are installed or still missing. Install the skills for your role, or point steps at skills you already have under
 `ai.steps` in `workspace.yaml`. A missing skill never stops a run; the step runs without it and preflight warns.
+
+### MCP servers from your Claude Code login
+
+`devflow setup` lists the MCP servers your logged-in Claude Code sees (`claude mcp list` shows the same names and
+whether each is connected) and asks which one to use for Jira, Confluence and Playwright. Your answers are saved under
+`claude_code_mcp:` in `workspace.yaml`; leave one blank to keep the default (`mcp_servers` in `workspace.yaml`, else
+Claude Code's own config files). Non-interactive: `devflow setup --jira-mcp "claude.ai Atlassian" --confluence-mcp
+"claude.ai Atlassian"`.
+
+With a server chosen there, each Jira or Confluence call runs `claude -p` (Haiku) allowed to use only the one tool
+for that call, and devflow reads the tool's raw result, so no Jira or Confluence token is needed and the connector's
+sign-in stays inside Claude Code. Each call takes several seconds and counts against your plan's usage. Confluence
+stays read-only: its write tools are never allowed. The official Atlassian connector has no tool to download or
+upload attachments or to edit a comment, so with it ticket attachments are not downloaded, review screenshots stay
+local, and devflow adds its comment once instead of updating it. `devflow doctor` shows each chosen server's state;
+if one needs a sign-in, run `claude`, then `/mcp`.
 
 ### Models
 
