@@ -1,8 +1,8 @@
 // The "Human in the loop" panel: one form per devflow checkpoint, a generic one for any other interrupt.
 // Buttons come only from the options the checkpoint offers; the server and the graph re-validate every answer.
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, ExternalLink, ShieldCheck, X } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { Check, Copy, ExternalLink, ImagePlus, Plus, ShieldCheck, Trash2, X } from "lucide-react";
+import { useRef, useState, type ReactNode } from "react";
 import { api, type Pending, type RunDetail, type Workflow } from "@/lib/api";
 import { cn, humanize } from "@/lib/format";
 import { JsonTree } from "../JsonTree";
@@ -148,7 +148,7 @@ export function AbortDialog({ open, onClose, onConfirm, pending, error, runId }:
 }
 
 const LABELS: Record<string, Record<string, string>> = {
-  _: { approve: "Approve & continue", ok: "It works", feedback: "Send feedback", revise: "Revise", proceed: "Proceed without answers", deny: "Deny", retry: "Retry", reuse: "Reuse branches", fixed_by_hand: "Fixed by hand, re-run checks", answer: "Answer", fix: "Fix", skip: "Skip", edit: "Apply my triage" },
+  _: { approve: "Approve & continue", ok: "It works", feedback: "Report problem, fix it now", revise: "Revise", proceed: "Proceed without answers", deny: "Deny", retry: "Retry", reuse: "Reuse branches", fixed_by_hand: "Fixed by hand, re-run checks", answer: "Answer", fix: "Fix", skip: "Skip", edit: "Apply my triage" },
   clarify: { answer: "Send answers" },
   approve_push: { approve: "Approve push" },
   approve_code: { approve: "Approve code, go test it", changes: "Request changes" },
@@ -179,9 +179,10 @@ const NOTE_HINT: Record<string, string> = {
 
 const BLOCKED: Record<string, (o: string, p: Record<string, any>, note: string, extra: Answer) => string | null> = {
   approve_plan: (o, p, note) => (o === "approve" && p.validation_errors?.length ? "The plan has validation errors; revise it" : o === "revise" && !note.trim() ? "Say what to change in the note" : null),
-  manual_test: (o, _p, note) => (o === "feedback" && !note.trim() ? "Describe what is wrong in the note" : null),
+  manual_test: (o, _p, note, extra) => (o === "feedback" && !note.trim() && !hasBug(extra) ? "Describe at least one bug (or write a decision note)" : null),
+  manual_retest: (o, _p, note, extra) => (o === "feedback" && !note.trim() && !hasBug(extra) ? "Describe at least one bug (or write a decision note)" : null),
+  human_step: (o, _p, note) => (o === "fail" && !note.trim() ? "Say what failed in the note" : null),
   approve_code: (o, _p, note) => (o === "changes" && !note.trim() ? "Say what to change in the note" : null),
-  manual_retest: (o, _p, note) => (o === "feedback" && !note.trim() ? "Describe what is wrong in the note" : null),
   route_ask: (o, _p, note, extra) => (o === "answer" && !note.trim() ? "Write the answer in the note" : o === "fix" && !(extra.repos as string[] | undefined)?.length ? "Pick the repos to fix" : null),
   triage: (o, _p, _note, extra) => (o === "approve" && extra._edited ? "You changed some actions: use Apply my triage" : o === "edit" && !extra._edited ? "Change an action in the table first" : null),
   clarify: (o, _p, note, extra) => (o === "answer" && !note.trim() && !(extra.note as string) ? "Answer at least one question" : null),
@@ -519,6 +520,111 @@ function PlanView({ p, run }: { p: Record<string, any>; run: RunDetail }) {
   );
 }
 
+type Bug = { description: string; expected: string; images: string[] };
+const emptyBug = (): Bug => ({ description: "", expected: "", images: [] });
+const bugsOf = (extra: Answer): Bug[] => (extra.bugs as Bug[] | undefined) ?? [emptyBug()];
+const hasBug = (extra: Answer) => bugsOf(extra).some((b) => b.description.trim() || b.expected.trim() || b.images.length);
+
+/** Any number of bugs, each with what is wrong, what was expected and optional screenshots. */
+function BugReport({ run, extra, setExtra }: { run: RunDetail; extra: Answer; setExtra: (a: Answer) => void }) {
+  const bugs = bugsOf(extra);
+  const [err, setErr] = useState("");
+  const [busyBug, setBusyBug] = useState<number | null>(null);
+  const set = (next: Bug[]) => setExtra({ ...extra, bugs: next });
+  const patch = (i: number, p: Partial<Bug>) => set(bugs.map((b, j) => (j === i ? { ...b, ...p } : b)));
+  const upload = async (i: number, files: File[]) => {
+    setErr("");
+    setBusyBug(i);
+    try {
+      const added: string[] = [];
+      for (const f of files.filter((f) => f.type.startsWith("image/"))) {
+        const data: string = await new Promise((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res(String(r.result).split(",")[1] ?? "");
+          r.onerror = () => rej(new Error("could not read the file"));
+          r.readAsDataURL(f);
+        });
+        added.push((await api.feedbackImage(run.run_id, f.name || "pasted.png", data)).path);
+      }
+      if (added.length) set(bugs.map((b, j) => (j === i ? { ...b, images: [...b.images, ...added] } : b)));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyBug(null);
+    }
+  };
+  return (
+    <Section
+      title="Anything failed or needs changing? One card per bug"
+      aside={<span className="font-normal">{bugs.length} bug{bugs.length === 1 ? "" : "s"}</span>}
+    >
+      <div className="space-y-3" data-testid="bug-list">
+        {bugs.map((b, i) => (
+          <BugCard key={i} n={i + 1} bug={b} run={run} uploading={busyBug === i} canRemove={bugs.length > 1}
+            onChange={(p) => patch(i, p)} onRemove={() => set(bugs.filter((_, j) => j !== i))} onFiles={(f) => void upload(i, f)} />
+        ))}
+      </div>
+      {err ? <div className="mt-2"><ErrorNote error={err} /></div> : null}
+      <Button type="button" size="sm" className="mt-2" onClick={() => set([...bugs, emptyBug()])} data-testid="add-bug">
+        <Plus className="size-3.5" /> Add another bug
+      </Button>
+      <p className="mt-1.5 text-xs text-muted-foreground">Devflow fixes all of them in one round, then asks you to test again. Empty cards are ignored.</p>
+    </Section>
+  );
+}
+
+function BugCard({ n, bug, run, uploading, canRemove, onChange, onRemove, onFiles }: {
+  n: number; bug: Bug; run: RunDetail; uploading: boolean; canRemove: boolean;
+  onChange: (p: Partial<Bug>) => void; onRemove: () => void; onFiles: (f: File[]) => void;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  return (
+    <div
+      className="rounded-lg border border-border bg-surface p-3"
+      data-testid={`bug-${n}`}
+      onPaste={(e) => {
+        const files = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith("image/"));
+        if (files.length) {
+          e.preventDefault();
+          onFiles(files);
+        }
+      }}
+    >
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-xs font-semibold">Bug {n}</span>
+        {canRemove ? (
+          <button type="button" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-destructive" onClick={onRemove} aria-label={`Remove bug ${n}`}>
+            <Trash2 className="size-3.5" /> Remove
+          </button>
+        ) : null}
+      </div>
+      <Label htmlFor={`bug-${n}-desc`}>What is wrong?</Label>
+      <Textarea id={`bug-${n}-desc`} rows={3} value={bug.description} onChange={(e) => onChange({ description: e.target.value })}
+        placeholder="What you did and what happened: the page, the steps, the wrong value or behaviour." />
+      <div className="mt-2" />
+      <Label htmlFor={`bug-${n}-exp`}>Expected behaviour</Label>
+      <Textarea id={`bug-${n}-exp`} rows={2} value={bug.expected} onChange={(e) => onChange({ expected: e.target.value })}
+        placeholder="What should happen instead (or the change you want made)." />
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        {bug.images.map((path) => (
+          <span key={path} className="group relative">
+            <img src={`/api/runs/${encodeURIComponent(run.run_id)}/file?path=${encodeURIComponent(path)}`} alt="screenshot" className="h-16 w-24 rounded-md border border-border object-cover" />
+            <button type="button" aria-label="Remove screenshot" className="absolute -right-1.5 -top-1.5 hidden size-5 items-center justify-center rounded-full bg-destructive text-white group-hover:flex"
+              onClick={() => onChange({ images: bug.images.filter((p) => p !== path) })}>
+              <X className="size-3" />
+            </button>
+          </span>
+        ))}
+        <input ref={input} type="file" accept="image/*" multiple hidden onChange={(e) => (onFiles(Array.from(e.target.files ?? [])), (e.target.value = ""))} />
+        <Button type="button" size="sm" disabled={uploading} onClick={() => input.current?.click()}>
+          {uploading ? <Spinner /> : <ImagePlus className="size-3.5" />} Add screenshot
+        </Button>
+        <span className="text-xs text-muted-foreground">optional; you can also paste an image here</span>
+      </div>
+    </div>
+  );
+}
+
 function ManualTest({ p, run, extra, setExtra }: FormProps) {
   const repos = Object.entries(p.repos ?? {}) as [string, any][];
   return (
@@ -598,6 +704,7 @@ function ManualTest({ p, run, extra, setExtra }: FormProps) {
           <JsonTree value={p.integration} open={1} />
         </Section>
       ) : null}
+      <BugReport run={run} extra={extra} setExtra={setExtra} />
       <RepoPicker label="Repos the feedback is about (if you know)" repos={repos.map(([n]) => n).length ? repos.map(([n]) => n) : Object.keys(run.scope ?? {})} value={(extra.repos as string[]) ?? []} onChange={(r) => setExtra({ ...extra, repos: r })} />
     </>
   );
@@ -612,7 +719,7 @@ function PushView({ p }: { p: Record<string, any> }) {
             Commit and push each repo's branch (never forced), in this order: <Mono className="text-foreground">{(p.merge_order ?? []).join(" → ")}</Mono>
           </li>
           <li>Open a draft MR per repo targeting develop (never merged by devflow)</li>
-          {p.jira === false ? null : <li>Move the Jira ticket to Code Review and add one delivery comment</li>}
+          {p.jira === false ? null : <li>Add one delivery comment to the Jira ticket (devflow never changes its status: you move it)</li>}
           <li>Manual test: {p.manual_test}</li>
         </ul>
       </Section>

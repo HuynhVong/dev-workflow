@@ -21,6 +21,35 @@ async function startTicket(page: Page, key: string) {
 
 const panel = (page: Page, name: string) => page.locator(`[data-testid="approval-panel"][data-checkpoint="${name}"]`);
 
+test("manual test: any number of bug cards, each with a description, the expected result and screenshots", async ({ page }) => {
+  await open(page);
+  await startTicket(page, "AQS-102");
+  await expect(panel(page, "approve_plan")).toBeVisible();
+  await page.getByTestId("choice-approve").click();
+  await expect(panel(page, "manual_test")).toBeVisible();
+
+  const feedback = page.getByTestId("choice-feedback");
+  await expect(feedback).toBeDisabled(); // nothing described yet
+  await page.getByLabel("What is wrong?").first().fill("The tooltip shows 1.00 for 1.005");
+  await expect(feedback).toBeEnabled();
+  await page.getByLabel("Expected behaviour").first().fill("1.01");
+  for (let i = 0; i < 6; i++) await page.getByTestId("add-bug").click(); // more than five bugs is fine
+  await expect(page.getByTestId("bug-list").locator('[data-testid^="bug-"]')).toHaveCount(7);
+  await page.getByLabel("What is wrong?").nth(6).fill("Header wraps on mobile");
+  // a screenshot on bug 7
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==", "base64");
+  await page.getByTestId("bug-7").locator('input[type="file"]').setInputFiles({ name: "wrap.png", mimeType: "image/png", buffer: png });
+  await expect(page.getByTestId("bug-7").getByRole("img", { name: "screenshot" })).toBeVisible();
+  await page.getByRole("button", { name: "Remove bug 2" }).click();
+  await expect(page.getByTestId("bug-list").locator('[data-testid^="bug-"]')).toHaveCount(6);
+  await feedback.click();
+  await expect(panel(page, "manual_test").or(panel(page, "route_ask"))).toBeVisible();
+  // leave nothing waiting for the next tests' counters
+  await page.getByTestId("approval-panel").getByTestId("choice-abort").click();
+  await page.getByTestId("confirm-abort").click();
+  await expect(page.getByTestId("run-detail").getByText("Aborted", { exact: true })).toBeVisible();
+});
+
 test("a Jira ticket run goes from start to draft MRs entirely in the browser", async ({ page }) => {
   await open(page);
   await startTicket(page, "AQS-101");
@@ -50,7 +79,7 @@ test("a Jira ticket run goes from start to draft MRs entirely in the browser", a
   await page.getByLabel("Decision note").fill("ship it");
   await page.getByTestId("choice-approve").click();
 
-  await expect(page.getByTestId("run-output")).toContainText("Code Review");
+  await expect(page.getByTestId("run-output")).toContainText("the ticket status is unchanged");
   await expect(page.getByTestId("run-detail").getByText("Completed", { exact: true })).toBeVisible();
 
   // The rest of the run's record.

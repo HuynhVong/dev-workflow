@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import type { RunDetail } from "@/lib/api";
 import { cn, duration } from "@/lib/format";
 import { useNow } from "@/lib/hooks";
+import { FailureDetail } from "../ui";
 import type { Step, StepState } from "@/lib/steps";
 
 export function Marker({ state, n, size = "md" }: { state: StepState; n: number | string; size?: "sm" | "md" }) {
@@ -35,6 +36,13 @@ const STATE_TEXT: Partial<Record<StepState, ReactNode>> = {
   failed: <span className="text-destructive">Failed</span>,
   skipped: <span className="text-muted-foreground">Skipped</span>,
 };
+
+/** The whole message of a failed step: the longest of the run's recorded detail and the step's own error. */
+function failureText(s: Step, run: RunDetail): string {
+  const own = [...s.execs].reverse().find((e) => e.error)?.error;
+  const cands = [own ? String(own) : "", run.status === "FAILED" ? run.detail ?? "" : ""];
+  return cands.sort((a, b) => b.length - a.length)[0] ?? "";
+}
 
 export function Stepper({ steps, run, selected, onSelect, after }: {
   steps: Step[];
@@ -99,6 +107,7 @@ export function Stepper({ steps, run, selected, onSelect, after }: {
                 {dur >= 1 ? <span className="font-mono text-[11px] text-muted-foreground">{duration(dur)}</span> : null}
               </div>
             </button>
+            {s.state === "failed" ? <div className="mb-2 ml-[52px] mr-2"><FailureDetail text={failureText(s, run)} /></div> : null}
             {after?.(s)}
           </li>
         );

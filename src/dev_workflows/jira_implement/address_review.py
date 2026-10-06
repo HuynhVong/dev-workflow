@@ -16,7 +16,7 @@ from ..llm import AsStep
 from . import dag as dagmod
 from . import worktrees
 from ..textutil import diffs_block
-from .graph import (CHECKPOINT_TITLES, release_run_worktrees, HIDDEN_NODES, SYSTEM, TICKET_FORM, TRANSIENT, Deps, GraphKit, _j, _tail, diff_digest, CROSS_REPO_DIFF, UPSTREAM_DIFF, check_fingerprint,
+from .graph import (CHECKPOINT_TITLES, SCREENSHOT_HINT, feedback_images, manual_feedback_items, release_run_worktrees, HIDDEN_NODES, SYSTEM, TICKET_FORM, TRANSIENT, Deps, GraphKit, _j, _tail, diff_digest, CROSS_REPO_DIFF, UPSTREAM_DIFF, check_fingerprint,
                     check_environment, merge_repos, route_feedback, run_repo_checks)
 from .jira import marker
 from .ledger import Effect, perform
@@ -388,8 +388,7 @@ def build_review_graph(deps: Deps, checkpointer=None):
         "hint": "The fixes change behaviour, so test them. Nothing is committed yet. ok = works; feedback = what's wrong."},
         ["ok", "feedback", "abort"])
     node("manual_ok", lambda s: {"manual_test_version": s.get("code_version", 0)})
-    node("manual_feedback", lambda s: {"pending_feedback": [{"source": "manual_test", "repos": s["last_answer"].get("repos", []),
-                                                              "text": s["last_answer"].get("note", "")}]})
+    node("manual_feedback", lambda s: {"pending_feedback": manual_feedback_items(s["last_answer"], ws.state_dir, s["run_id"])})
     g.add_conditional_edges("manual_retest_wait", lambda s: {"ok": "manual_ok", "feedback": "manual_feedback", "abort": "abort"}[choice(s)],
                             ["manual_ok", "manual_feedback", "abort"])
     g.add_conditional_edges("manual_ok", gate, ["integration_check", "manual_retest", "repo_review", "approve_push"])
@@ -437,7 +436,9 @@ def build_review_graph(deps: Deps, checkpointer=None):
             + (f"<developer_answers>{answers}</developer_answers>\n" if answers else "")
             + f"<feedback>{_j(items_in)}</feedback>\n\nClassify each feedback item: which repos must change, the cause and your "
             "confidence. requirement_gap when the ask itself is unclear, scope_issue when a repo outside repos_in_scope must "
-            "change, unclear when the evidence does not point to a cause."), FeedbackAnalysis, step="analyze_feedback_and_route")
+            "change, unclear when the evidence does not point to a cause."
+            + (f"\n{SCREENSHOT_HINT}" if feedback_images(items_in) else "")),
+            FeedbackAnalysis, images=feedback_images(items_in), step="analyze_feedback_and_route")
         fixes, ask, outside = route_feedback(fa, repos, repos, [tuple(e) for e in state["dag"]["edges"]], ws.max_fix_attempts)
         ask += [{"source": "analyzer", "category": "scope_issue", "repos": [o["repo"]], "cause": o["reason"],
                  "why_asking": "outside the repos being fixed in this round"} for o in outside]

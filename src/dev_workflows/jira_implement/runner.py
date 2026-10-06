@@ -275,7 +275,7 @@ class Session:
                 return "FAILED"
             except Exception as e:  # noqa: BLE001 - recorded, resumable
                 node = (self.store.run(run_id) or {}).get("node", "")
-                self.store.set_status(run_id, "FAILED", node=node, detail=f"{type(e).__name__}: {e}"[:1000])
+                self.store.set_status(run_id, "FAILED", node=node, detail=f"{type(e).__name__}: {e}"[:FULL_ERROR])
                 self.say(f"Run {run_id} FAILED at {node}: {e}\nIt is resumable: `devflow resume {run_id}`.")
                 return "FAILED"
             if run_id in self.cancelled:
@@ -320,7 +320,7 @@ class Session:
         result, error = chunk.get("result"), chunk.get("error")
         if isinstance(result, dict) and isinstance(result.get("repos"), dict) and len(result["repos"]) == 1 and not repo:
             repo = next(iter(result["repos"]))
-        data = {"task": chunk.get("id"), "error": str(error)[:2000] if error else None,
+        data = {"task": chunk.get("id"), "error": str(error)[:FULL_ERROR] if error else None,
                 "interrupted": bool(chunk.get("interrupts")), "result": trim(result)}
         self.store.event(run_id, "node_finished", node=name, repo=repo, data=data)
         if name == "fetch_ticket" and isinstance(result, dict) and (result.get("ticket") or {}).get("title"):
@@ -347,6 +347,7 @@ class Session:
 
 TICKET_KEY = re.compile(r"^[A-Z][A-Z0-9_]+-\d+$")
 TRIM_CHARS = 20000
+FULL_ERROR = 20000  # a failure message is kept whole so the UI can show the real reason
 
 
 def jsonable(obj):

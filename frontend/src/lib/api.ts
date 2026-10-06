@@ -245,6 +245,7 @@ export const api = {
     call<{ run_id: string; queued: boolean }>("POST", "/api/runs", { workflow, values }),
   answer: (id: string, body: Record<string, unknown>) => call<{ ok: boolean }>("POST", `/api/runs/${encodeURIComponent(id)}/answer`, body),
   resume: (id: string, reopen = false) => call<{ ok: boolean }>("POST", `/api/runs/${encodeURIComponent(id)}/resume`, { reopen }),
+  feedbackImage: (id: string, name: string, data: string) => call<{ path: string }>("POST", `/api/runs/${encodeURIComponent(id)}/feedback-images`, { name, data }),
   abort: (id: string, note = "") => call<{ status: string }>("POST", `/api/runs/${encodeURIComponent(id)}/abort`, { note }),
   events: (id: string, after = 0) => call<{ events: DevEvent[] }>("GET", `/api/runs/${encodeURIComponent(id)}/events?after=${after}`),
   audit: (id: string) =>
