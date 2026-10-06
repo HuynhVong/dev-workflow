@@ -5,6 +5,7 @@ Claude Code keeps MCP servers in ~/.claude.json (user scope at the top level, lo
 """
 import json
 import os
+import re
 from pathlib import Path
 
 
@@ -30,10 +31,27 @@ def claude_code_mcp_servers(files: list[Path] | None = None) -> dict[str, dict]:
     return found
 
 
+_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+
+def expand(value):
+    """Claude Code's `${VAR}` / `${VAR:-default}` in command, args, env, url and headers, at any depth."""
+    if isinstance(value, str):
+        def sub(m):
+            name, default = m.groups()
+            return os.environ.get(name, m.group(0)) if default is None else os.environ.get(name) or default
+        return os.path.expandvars(_VAR_RE.sub(sub, value))
+    if isinstance(value, list):
+        return [expand(v) for v in value]
+    if isinstance(value, dict):
+        return {k: expand(v) for k, v in value.items()}
+    return value
+
+
 def _normalize(cfg: dict) -> dict:
-    """Claude Code's {"type": "http", "url": ..., "headers": ...} / {"command", "args", "env"} as our MCP client takes it."""
-    out = {k: v for k, v in cfg.items() if k in ("command", "args", "env", "url", "headers")}
-    return {k: os.path.expandvars(v) if isinstance(v, str) else v for k, v in out.items()}
+    """Claude Code's {"type": "http"|"sse", "url": ..., "headers": ...} / {"command", "args", "env"} as our MCP client
+    takes it."""
+    return expand({k: v for k, v in cfg.items() if k in ("type", "command", "args", "env", "url", "headers")})
 
 
 def resolve_jira_server(ws, files: list[Path] | None = None) -> tuple[str, dict, str] | None:
