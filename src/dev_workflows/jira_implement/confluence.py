@@ -1,4 +1,5 @@
 """Strictly read-only Confluence access. Write tools are unreachable by construction."""
+import html
 import re
 from typing import Any
 
@@ -72,3 +73,30 @@ def page_ids_from_urls(urls: list[str]) -> list[str]:
             if pid not in ids:
                 ids.append(pid)
     return ids
+
+
+# Page fields that only cost tokens in a prompt (links, versions, permissions, expansion hints).
+NOISE_KEYS = {"_links", "_expandable", "links", "version", "history", "extensions", "metadata", "operations",
+              "restrictions", "container", "ancestors", "space", "body_format", "webui", "tinyui", "self", "icon"}
+_TAG = re.compile(r"<[^>]+>")
+_BLOCK = re.compile(r"<\s*(?:/p|br\s*/?|/h\d|/li|/tr|/div|/table|/ul|/ol)\s*>", re.I)
+
+
+def html_to_text(text: str) -> str:
+    """Confluence storage-format HTML -> plain text with line breaks kept (tables become one row per line)."""
+    text = re.sub(r"<\s*/t[dh]\s*>", " | ", text, flags=re.I)
+    text = _BLOCK.sub("\n", text)
+    text = html.unescape(_TAG.sub("", text))
+    text = re.sub(r"[ \t]+", " ", text)
+    return re.sub(r"\n\s*\n+", "\n\n", text).strip()
+
+
+def compact_pages(obj: Any) -> Any:
+    """Confluence results trimmed for a prompt: HTML bodies as text, link/version/permission fields dropped."""
+    if isinstance(obj, dict):
+        return {k: compact_pages(v) for k, v in obj.items() if k not in NOISE_KEYS and v not in (None, "", [], {})}
+    if isinstance(obj, list):
+        return [compact_pages(v) for v in obj]
+    if isinstance(obj, str) and _TAG.search(obj):
+        return html_to_text(obj)
+    return obj

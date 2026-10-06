@@ -53,6 +53,9 @@ def test_cli_call_passes_schema_model_effort_skills_and_drops_the_api_key(tmp_pa
     assert arg("--model") == MODELS["opus"] and arg("--effort") == "medium" and arg("--tools") == ""
     assert "Always plan in dependency waves." in arg("--system-prompt")
     assert kw["input"] == "the prompt" and "ANTHROPIC_API_KEY" not in kw["env"]
+    # no MCP server and no skill listing: Claude Code would otherwise send every installed MCP tool with the call
+    assert "--strict-mcp-config" in cmd and json.loads(arg("--mcp-config")) == {"mcpServers": {}}
+    assert "--disable-slash-commands" in cmd
 
     llm.structured("sys", "hi", Out, step="summary")
     assert "--effort" not in calls[1][0] and calls[1][0][calls[1][0].index("--model") + 1] == MODELS["haiku"]

@@ -15,7 +15,7 @@ from typing_extensions import TypedDict
 from ..llm import AsStep
 from . import dag as dagmod
 from . import worktrees
-from .graph import (CHECKPOINT_TITLES, HIDDEN_NODES, SYSTEM, TICKET_FORM, TRANSIENT, Deps, GraphKit, _j, _tail,
+from .graph import (CHECKPOINT_TITLES, HIDDEN_NODES, SYSTEM, TICKET_FORM, TRANSIENT, Deps, GraphKit, _j, _tail, diff_digest,
                     check_environment, merge_repos, route_feedback, run_repo_checks)
 from .jira import marker
 from .ledger import Effect, perform
@@ -145,7 +145,7 @@ def build_review_graph(deps: Deps, checkpointer=None):
     # 3 -------------------------------------------------------------------------------------------
     def classify_comments(state):
         vcs = deps.vcs(state)
-        diffs = {r: _tail(vcs.diff_against(r, f"origin/{ws.repo(r).base_branch}"), 40000) for r in state["mrs"]}
+        diffs = {r: diff_digest(vcs.diff_against(r, f"origin/{ws.repo(r).base_branch}")) for r in state["mrs"]}
         tr = llm.structured(SYSTEM, (
             f"Ticket {state['ticket_key']}. Unresolved review threads on its draft MRs:\n<threads>{_j(state['threads'])}</threads>\n"
             f"<mr_diffs>{_j(diffs)}</mr_diffs>\n<repos_in_scope>{list(state['scope'])}</repos_in_scope>\n\n"

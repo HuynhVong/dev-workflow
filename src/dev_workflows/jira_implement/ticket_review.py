@@ -18,8 +18,8 @@ from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
 from .. import doctor
-from .confluence import page_ids_from_urls
-from .graph import SYSTEM, TRANSIENT, Deps, GraphKit, PreflightFailed, _j, _tail
+from .confluence import compact_pages, page_ids_from_urls
+from .graph import SYSTEM, TRANSIENT, Deps, GraphKit, PreflightFailed, _j, _tail, diff_digest
 from .jira import IMAGE_EXT, JiraWriteRefused, marker
 from .ledger import Effect, perform
 from .mcp_config import has_playwright
@@ -257,7 +257,7 @@ def build_graph(deps: Deps, checkpointer=None):
                 except Exception as e:  # noqa: BLE001
                     pages.append({"id": pid, "error": str(e)[:200]})
         prompt = (f"<ticket key='{t['key']}'>\n<title>{t['title']}</title>\n<description>\n{t['description']}\n</description>\n</ticket>\n"
-                  + (f"<confluence>\n{_tail(_j(pages), 100000)}\n</confluence>\n" if pages else "")
+                  + (f"<confluence>\n{_tail(_j(compact_pages(pages)), 30000)}\n</confluence>\n" if pages else "")
                   + "\nYou are about to review and test the code that implements this ticket. State what it requires and the "
                     "acceptance criteria a tester must prove. Derive criteria from the description when it has none.")
         u = llm.structured(SYSTEM, prompt, TicketUnderstanding, images=t.get("images", []), step="ticket_review.understand")
@@ -288,7 +288,7 @@ def build_graph(deps: Deps, checkpointer=None):
                                    "description": ticket_block(state), "diff": diff, "findings": []})
             reviews[r] = {"decision": out["verdict"].decision, "summary": out["verdict"].summary, "risk": out["triage"].risk,
                           "findings": [f.model_dump() for f in out["findings"]]}
-        cov = llm.structured(SYSTEM, ticket_block(state) + f"\n<commits_by_repo>\n{_j({r: _tail(d, 40000) for r, d in diffs.items()})}\n</commits_by_repo>\n\n"
+        cov = llm.structured(SYSTEM, ticket_block(state) + f"\n<commits_by_repo>\n{_j({r: diff_digest(d) for r, d in diffs.items()})}\n</commits_by_repo>\n\n"
                              "For every acceptance criterion, say whether these commits implement it (met, partial, missing or "
                              "unclear) with the evidence. Then list changes the ticket does not ask for.",
                              Coverage, step="ticket_review.coverage")
