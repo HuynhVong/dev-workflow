@@ -1,15 +1,16 @@
 """Run a workflow from the terminal.
 
   devflow plan   --ticket ticket.md [--context stack.md] [--no-interactive]
-  devflow standup --repo ~/code/api --repo ~/code/web [--since "yesterday"] [--author me@x.com] [--notes notes.md]
 
-Jira ticket implement (needs workspace.yaml, see workspace.example.yaml):
+Jira workflows (need workspace.yaml, see workspace.example.yaml):
+  devflow standup [--from 2026-10-01] [--to 2026-10-03] [--template report.md] [--no-input]
   devflow setup [--ticket AQS-5512]       first run: Jira MCP (required), models per step, global skills to install
   devflow implement AQS-5512 [--repos api-service,web-portal] [--no-input]
   devflow address-review AQS-5512 [--repos api-service,web-portal] [--no-input]
   devflow review AQS-5512 --commit web-portal=3f9a1c2 [--commit api-service=88be0d4,a17c3e9] [--app-url URL] [--no-input]
   devflow answer <run_id> --choice approve [--note "..."] [--repos a,b] [--approve-repos x] [--fix 1,3 --answer-only 2 --skip 4]
                  [--app-url URL] [--run TC1,TC2] [--retest TC2] [--comment-file comment.md]
+                 [--keep AQS-1,AQS-2] [--report-file report.md]
   devflow resume <run_id> [--reopen]      devflow abort <run_id> [--note "..."]
   devflow status <run_id>                 devflow show <run_id>          devflow runs
   devflow worktrees                       devflow worktree-clean <ticket> [--repo api-service]
@@ -23,7 +24,7 @@ from pathlib import Path
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
-from .workflows import standup, ticket_to_plan
+from .workflows import ticket_to_plan
 
 
 def _read(path: str | None) -> str:
@@ -50,12 +51,6 @@ def run_plan(args) -> str:
     return result["output"]
 
 
-def run_standup(args) -> str:
-    return standup.graph.invoke(
-        {"repo_paths": args.repo or [], "since": args.since, "author": args.author, "notes": _read(args.notes)}
-    )["output"]
-
-
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="devflow")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -65,13 +60,6 @@ def main(argv: list[str] | None = None) -> None:
     sp.add_argument("--context", help="notes about the repo/stack")
     sp.add_argument("--no-interactive", action="store_true", help="don't stop for clarifying questions")
     sp.set_defaults(fn=run_plan)
-
-    ss = sub.add_parser("standup", help="standup notes from git + notes")
-    ss.add_argument("--repo", action="append")
-    ss.add_argument("--since", default="yesterday")
-    ss.add_argument("--author")
-    ss.add_argument("--notes")
-    ss.set_defaults(fn=run_standup)
 
     _add_implement_commands(sub)
     args = p.parse_args(argv)
@@ -120,6 +108,18 @@ def _add_implement_commands(sub) -> None:
         _session(a).start_run(TICKET_REVIEW, {"ticket": a.ticket, "commits": a.commit, "app_url": a.app_url or ""})
     st.set_defaults(fn=do_ticket_review)
 
+    sp = sub.add_parser("standup", help="work report: Jira tickets you started and reviewed in a date range, in your template")
+    sp.add_argument("--from", dest="from_date", metavar="YYYY-MM-DD", help="inclusive (default: previous working day)")
+    sp.add_argument("--to", dest="to_date", metavar="YYYY-MM-DD", help="inclusive (default: today)")
+    sp.add_argument("--template", help="Markdown report template file (default: the last one you used, else the built-in one)")
+    common(sp, run=False)
+
+    def do_standup(a):
+        from .jira_implement.standup import WORKFLOW as STANDUP
+        _session(a).start_run(STANDUP, {"from_date": a.from_date or "", "to_date": a.to_date or "",
+                                        "template": _read(a.template)})
+    sp.set_defaults(fn=do_standup)
+
     su = sub.add_parser("setup", help="first-time setup: Jira MCP (required), models per step, global Claude Code skills")
     su.add_argument("--workspace", help="path to workspace.yaml (default: $DEVFLOW_WORKSPACE or ./workspace.yaml)")
     su.add_argument("--ticket", help="a ticket key you can see, to prove the Jira MCP can read it")
@@ -164,6 +164,8 @@ def _add_implement_commands(sub) -> None:
     sa.add_argument("--run", help="ticket review test plan (choice approve): case ids to run, default all")
     sa.add_argument("--retest", help="ticket review results (choice retest): case ids to run again")
     sa.add_argument("--comment-file", help="ticket review comment (choice edit): file with your edited comment")
+    sa.add_argument("--keep", help="standup tickets (choice continue): ticket keys to keep, default all")
+    sa.add_argument("--report-file", help="standup report (choice edit): file with your edited report")
 
     def do_answer(a):
         if a.value is not None:
@@ -178,6 +180,10 @@ def _add_implement_commands(sub) -> None:
                 ans[key] = _csv(value)
         if a.app_url:
             ans["app_url"] = a.app_url
+        if a.keep:
+            ans["keep"] = _csv(a.keep)
+        if a.report_file:
+            ans["report"] = Path(a.report_file).expanduser().read_text()
         if a.comment_file:
             ans["comment"] = Path(a.comment_file).expanduser().read_text()
         _session(a).answer(a.run_id, ans)

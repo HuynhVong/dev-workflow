@@ -258,12 +258,13 @@ def test_setup_requires_a_jira_mcp_and_reports_what_it_may_do(tmp_path):
     fail = doctor.jira_access_checks(ws, None)
     assert fail[0].status == "fail" and fail[0].blocking and "claude mcp add" in fail[0].fix
     full = doctor.jira_access_checks(ws, JiraGateway(FakeMcp(ws.jira_tools.values()), ws.jira_tools, ws.status_order), ticket=KEY)
-    assert [c.status for c in full] == ["ok", "ok", "ok", "ok"]
+    assert [c.status for c in full] == ["ok", "ok", "ok", "ok", "ok"]
     ro = FakeMcp([ws.jira_tools["get_issue"], ws.jira_tools["download_attachments"]])
     checks = {c.id: c for c in doctor.jira_access_checks(ws, JiraGateway(ro, ws.jira_tools, ws.status_order))}
     assert checks["mcp.jira.read"].status == "ok"
     assert checks["mcp.jira.comment"].status == "warn" and "post by hand" in checks["mcp.jira.comment"].detail
     assert checks["mcp.jira.attach"].status == "warn"
+    assert checks["mcp.jira.search"].status == "warn" and "standup" in checks["mcp.jira.search"].detail
 
 
 def test_jira_server_comes_from_claude_code_when_workspace_has_none(tmp_path):

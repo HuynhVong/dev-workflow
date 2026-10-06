@@ -60,7 +60,9 @@ STEPS: dict[str, Step] = {
     "pr_review.triage": Step("haiku", ("code-review",)),
     "pr_review.lens": Step("sonnet", ("code-review",)),
     "pr_review.verdict": Step("sonnet", ("code-review",)),
-    "standup": Step("haiku", ("standup",)),
+    # standup (work report from Jira)
+    "standup.digest": Step("haiku", ("standup",)),
+    "standup.report": Step("sonnet", ("standup", "work-report")),
 }
 
 # Files that reveal a repo's stack, for picking repo-specific coding skills.

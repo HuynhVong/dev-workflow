@@ -160,3 +160,31 @@ test("a ticket review: checkout, approved test plan, a step that needs you, proo
 
   await expect(page.getByTestId("run-output")).toContainText("Posted to Jira");
 });
+
+test("a standup: dates and template in, tickets from Jira's history confirmed, report edited and saved", async ({ page }) => {
+  await open(page);
+  await page.getByTestId("new-run").click();
+  await page.getByTestId("workflow-select").selectOption("standup");
+  await page.getByLabel("From date").fill("2026-10-01");
+  await page.getByLabel("To date").fill("2026-10-02");
+  await page.getByLabel("Report template").fill("## Work report {{from}} → {{to}}\n### Started\n### Reviewed\n### Notes");
+  await page.getByTestId("start-run").click();
+
+  await expect(panel(page, "confirm_tickets")).toBeVisible();
+  await expect(page.getByTestId("tickets-started")).toContainText("AQS-1");
+  await expect(page.getByTestId("tickets-started")).not.toContainText("AQS-2 ");
+  await expect(page.getByTestId("tickets-reviewed")).toContainText("AQS-10");
+  await expect(page.getByTestId("tickets-reviewed")).not.toContainText("AQS-11");
+  await page.getByTestId("ticket-AQS-3").uncheck();
+  await page.getByTestId("choice-continue").click();
+
+  await expect(panel(page, "review_report")).toBeVisible();
+  await expect(page.getByTestId("standup-report")).toHaveValue(/### Reviewed/);
+  await expect(page.getByTestId("choice-edit")).toBeDisabled();
+  await page.getByTestId("standup-report").fill((await page.getByTestId("standup-report").inputValue()) + "\nDemo on Friday.");
+  await expect(page.getByTestId("choice-accept")).toBeDisabled();
+  await page.getByTestId("choice-edit").click();
+  await expect(page.getByTestId("standup-report")).toHaveValue(/Demo on Friday\./);
+  await page.getByTestId("choice-accept").click();
+  await expect(page.getByText("Completed").first()).toBeVisible();
+});

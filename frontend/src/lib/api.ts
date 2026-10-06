@@ -35,7 +35,7 @@ export interface DoctorResult { checks: Check[]; summary: DoctorSummary; at: num
 export interface FormField {
   name: string;
   label: string;
-  type: "ticket" | "repos" | "text" | "textarea" | "select" | "bool" | "number" | "list" | "json" | string;
+  type: "ticket" | "repos" | "text" | "textarea" | "select" | "bool" | "number" | "list" | "json" | "date" | string;
   required?: boolean;
   placeholder?: string;
   help?: string;
@@ -47,7 +47,7 @@ export interface Workflow {
   id: string;
   title: string;
   description: string;
-  kind: "ticket" | "graph";
+  kind: "ticket" | "jira" | "graph";
   source: string;
   icon: string;
   color: string;

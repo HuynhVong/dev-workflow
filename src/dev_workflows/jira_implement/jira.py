@@ -1,5 +1,6 @@
-"""Jira through MCP: read the ticket, and the idempotent writes the workflows are allowed (status, one comment per run
-and step, and the ticket review's proof screenshots as attachments)."""
+"""Jira through MCP: read the ticket, search with JQL and read issue history (the standup), and the idempotent writes
+the workflows are allowed (status, one comment per run and step, and the ticket review's proof screenshots as
+attachments)."""
 import json
 import re
 from pathlib import Path
@@ -15,7 +16,7 @@ def marker(run_id: str, step: str) -> str:
     return f"[devflow:{run_id}:{step}]"
 
 
-OPTIONAL_TOOLS = ("attach",)  # never required by `missing_tools`
+OPTIONAL_TOOLS = ("attach", "search", "batch_changelogs")  # never required by `missing_tools`
 READ_TOOLS = ("get_issue", "download_attachments")
 COMMENT_TOOLS = ("add_comment", "edit_comment")
 PERMISSION_RE = re.compile(r"\b(401|403)\b|permission|forbidden|not authori[sz]ed|unauthori[sz]ed|read[- ]only|not allowed", re.I)
@@ -42,7 +43,68 @@ class JiraGateway:
         missing_read, missing_write = miss(READ_TOOLS), miss(COMMENT_TOOLS[:1])
         return {"read": not missing_read, "comment": not missing_write, "edit": not miss(COMMENT_TOOLS[1:]),
                 "attach": bool(self.tools.get("attach")) and not miss(("attach",)),
+                "search": bool(self.tools.get("search")) and not miss(("search",)),
                 "missing_read": missing_read, "missing_write": missing_write}
+
+    # --- read-only queries for the standup -------------------------------------------------------------------------
+    def search(self, jql: str, fields: str = "summary,status,assignee", limit: int = 50, max_issues: int = 500) -> list[dict]:
+        """Every issue the JQL finds (paged), as the server returns them."""
+        out: list[dict] = []
+        while len(out) < max_issues:
+            data = self.mcp.call(self.tools["search"], {"jql": jql, "fields": fields, "limit": limit, "start_at": len(out)})
+            data = data if isinstance(data, (dict, list)) else json.loads(data)
+            page = data if isinstance(data, list) else data.get("issues") or []
+            out += [i for i in page if isinstance(i, dict)]
+            total = data.get("total") if isinstance(data, dict) else None
+            known = isinstance(total, int) and total >= 0  # the server may cap a page below `limit`, so trust total first
+            if not page or (known and total <= len(out)) or (not known and len(page) < limit):
+                break
+        return out[:max_issues]
+
+    def myself(self, user: str = "") -> dict:
+        """The account behind the Jira MCP: {account_id, name, email, display_name, time_zone}. With `user` (workspace
+        jira_user) its profile is read; without it, the assignee of your most recently updated ticket is used."""
+        raw: dict = {}
+        if user:
+            data = self.mcp.call(self.tools["get_user_profile"], {"user_identifier": user})
+            raw = data if isinstance(data, dict) else json.loads(data)
+            raw = raw.get("user", raw) if isinstance(raw.get("user"), dict) else raw
+        elif self.tools.get("search"):
+            hits = self.search("assignee = currentUser() ORDER BY updated DESC", fields="assignee", limit=1, max_issues=1)
+            f = hits[0].get("fields", hits[0]) if hits else {}
+            raw = f.get("assignee") if isinstance(f.get("assignee"), dict) else {}
+        if not raw:
+            raise RuntimeError("cannot tell which Jira account is yours: set jira_user (your Jira e-mail) in workspace.yaml")
+        pick = lambda *keys: next((str(raw[k]) for k in keys if raw.get(k)), "")  # noqa: E731
+        return {"account_id": pick("accountId", "account_id", "id"), "name": pick("name", "key", "username"),
+                "email": pick("emailAddress", "email"), "display_name": pick("displayName", "display_name"),
+                "time_zone": pick("timeZone", "time_zone", "timezone")}
+
+    def activity(self, key: str) -> dict:
+        """One issue for the standup: summary, description, current status and assignee, its comments and its history
+        (oldest first), normalised to {"created", "author", "items": [{"field", "from", "from_string", "to", "to_string"}]}."""
+        data = self.mcp.call(self.tools["get_issue"], {"issue_key": key, "fields": "summary,description,status,assignee,comment",
+                                                       "expand": "changelog", "comment_limit": 100})
+        issue = data if isinstance(data, dict) else json.loads(data)
+        f = issue.get("fields", issue)
+        histories = _histories(issue)
+        if histories is None and self.tools.get("batch_changelogs") and self.tools["batch_changelogs"] in set(self.mcp.list_tools()):
+            raw = self.mcp.call(self.tools["batch_changelogs"], {"issue_ids_or_keys": [key], "fields": ["status", "assignee"]})
+            raw = raw if isinstance(raw, (dict, list)) else json.loads(raw)
+            rows = raw if isinstance(raw, list) else raw.get("issues") or raw.get("changelogs") or []
+            histories = next((_histories(r) for r in rows if isinstance(r, dict) and _histories(r) is not None), None)
+        if histories is None:
+            raise RuntimeError(f"the Jira MCP returned no history for {key} (expand=changelog); map jira_tools.batch_changelogs")
+        comments = f.get("comment", {})
+        comments = comments.get("comments", comments) if isinstance(comments, dict) else comments
+        comments = comments or issue.get("comments") or []
+        description = f.get("description") or ""
+        status, assignee = f.get("status") or {}, f.get("assignee")
+        return {"key": issue.get("key", key), "summary": f.get("summary", ""),
+                "description": description if isinstance(description, str) else json.dumps(description),
+                "status": status.get("name", "") if isinstance(status, dict) else str(status), "assignee": assignee,
+                "comments": [c for c in comments if isinstance(c, dict)],
+                "histories": sorted(histories, key=lambda h: str(h.get("created", "")))}
 
     def attachment_names(self, key: str) -> list[str]:
         f = self._issue(key, "attachment")
@@ -189,3 +251,23 @@ REVIEW_SPLIT = "\n\n---\nReview update: "
 
 def attachments_of(ticket: dict[str, Any]) -> list[str]:
     return ticket.get("attachments", [])
+
+
+def _histories(issue: dict) -> list[dict] | None:
+    """An issue's changelog in one shape, from the REST layout (changelog.histories) or a simplified MCP layout
+    (changelogs / changelog as a list, from_string / fromString). None when the response has no changelog at all."""
+    raw = issue.get("changelog", issue.get("changelogs"))
+    if isinstance(raw, dict):
+        raw = raw.get("histories", raw.get("values"))
+    if not isinstance(raw, list):
+        return None
+    out = []
+    for h in raw:
+        if not isinstance(h, dict):
+            continue
+        items = [{"field": str(i.get("field") or i.get("fieldId") or "").lower(),
+                  "from": i.get("from", i.get("from_id")), "from_string": i.get("fromString", i.get("from_string")),
+                  "to": i.get("to", i.get("to_id")), "to_string": i.get("toString", i.get("to_string"))}
+                 for i in h.get("items") or [] if isinstance(i, dict)]
+        out.append({"created": h.get("created", ""), "author": h.get("author"), "items": items})
+    return out

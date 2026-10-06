@@ -6,7 +6,7 @@ A full-stack developer's day-to-day team workflows, each as a small LangGraph gr
 |---|---|---|
 | Ticket to plan | `ticket_to_plan` | Analyzes a ticket, **pauses to ask you** any blocking questions, drafts an ordered plan (steps, API/DB changes, tests, risks), then a tech-lead critique loop revises it (max 2 rounds). |
 | Ticket review | `jira_implement/ticket_review.py` | A Jira ticket plus the commits that implement it: you check out the branch, it reads the ticket, reviews the commits against it, writes a test plan you approve, runs it with Playwright (pausing when a step needs you), and posts one comment with the proof screenshots on the ticket after you approve it. |
-| Standup | `standup` | Reads your `git log` across repos plus free-text notes and writes Yesterday / Today / Blockers. |
+| Standup | `jira_implement/standup.py` | Your work report for a date range: the Jira tickets you moved Approved → In Progress (assigned to you) and the ones moved to In Review while assigned to you (reviews), found from each ticket's history, written into your own report template. Read-only. |
 | Jira ticket implement | `jira_implement/graph.py` | One Jira key to draft GitLab MRs across several repos: reads the ticket and its Confluence pages, plans a dependency DAG, has Claude Code implement repo by repo in waves, runs your checks, stops for your manual test and approval, then pushes, opens draft MRs and moves the ticket to Code Review. |
 | Address review | `jira_implement/address_review.py` | Reads the unresolved threads on the ticket's draft MRs, lets you triage them, fixes the code in the affected repos only, re-tests, pushes, and replies in each thread (never resolves it). |
 
@@ -24,6 +24,7 @@ src/dev_workflows/
     graph.py             jira ticket implement (+ shared GraphKit, preflight, feedback routing)
     address_review.py    address-review companion graph
     ticket_review.py     ticket review (commits vs ticket, approved E2E proof, Jira comment)
+    standup.py           standup / work report (date range + your template, tickets from Jira history)
     mcp_config.py        finds the Jira MCP in workspace.yaml or the one connected to Claude Code
     vcs.py               the only place git/glab run: always `rtk git|glab`, deny-list, scope check
     scope.py             frozen repo allow-list (--repos)
@@ -38,7 +39,7 @@ src/dev_workflows/
   telemetry.py         token usage and coding-agent activity, recorded per run and node
   ui/                  `devflow ui`: FastAPI server, background run manager, built frontend in ui/static
 frontend/              the web app source (React, TypeScript, Vite, Tailwind, React Flow); `npm run build`
-docs/                  the approved designs: jira-ticket-implement, devflow-ui-plan, ticket-review
+docs/                  the approved designs: jira-ticket-implement, devflow-ui-plan, ticket-review, standup
 tests/                 offline tests with a fake LLM (no API key needed)
 langgraph.json         lets `langgraph dev` / LangGraph Studio load all graphs
 ```
@@ -56,7 +57,7 @@ pytest -q
 
 ```bash
 devflow plan --ticket examples/ticket.md --context docs/stack.md
-devflow standup --repo ~/code/api --repo ~/code/web --author "$(git config user.email)"
+devflow standup --from 2026-10-01 --to 2026-10-03 --template ~/reports/weekly.md   # needs workspace.yaml (Jira MCP)
 langgraph dev          # visual graph + step-through in LangGraph Studio
 ```
 

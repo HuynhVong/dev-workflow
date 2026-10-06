@@ -25,8 +25,11 @@ from dev_workflows.jira_implement.workspace import load_workspace  # noqa: E402
 from dev_workflows.ui.server import App, create_app  # noqa: E402
 from dev_workflows.jira_implement.models import (CommentDraft, Coverage, CriterionCoverage, TestCase, TestPlanDraft,  # noqa: E402
                                                  TicketUnderstanding)
+from dev_workflows.jira_implement import standup  # noqa: E402
+from dev_workflows.jira_implement.jira import JiraGateway  # noqa: E402
 from jira_implement.harness import FakeCoder, FakeLLM, make_env, sh  # noqa: E402
 from jira_implement.test_runner import session as make_session  # noqa: E402
+from jira_implement.test_standup import ISSUES as STANDUP_ISSUES, StandupMcp  # noqa: E402
 
 MODELS = {"gather_context": "claude-haiku-4-5", "plan_implementation": "claude-opus-5-5"}
 
@@ -134,6 +137,31 @@ class QState(TypedDict, total=False):
     output: str
 
 
+STANDUP_ANSWERS = {
+    standup.Digest: [standup.Digest(lines=[standup.TicketLine(key="AQS-1", what="CSV export of the orders list", did="Started it"),
+                                           standup.TicketLine(key="AQS-10", what="Order filters", did="Checked the CSV filters: approved")])],
+    standup.Report: [standup.Report(report="## Work report 2026-10-01 → 2026-10-02\n\n### Started (Approved → In Progress)\n"
+                                           "- AQS-1 Export orders: CSV export of the orders list\n\n### Reviewed\n"
+                                           "- AQS-10 Review assigned in the move: checked the CSV filters, approved\n\n### Notes\nNone")],
+}
+
+
+class DemoJira:
+    """The harness's fake Jira plus the standup's: JQL search, your profile and ticket history for its demo tickets."""
+
+    def __init__(self, base, tools):
+        self.base, self.standup = base, StandupMcp(tools)
+
+    def list_tools(self):
+        return self.base.list_tools()
+
+    def call(self, tool, args):
+        if tool in ("jira_search", "jira_get_user_profile") or (tool == "jira_get_issue" and args.get("issue_key") in STANDUP_ISSUES):
+            time.sleep(0.05)
+            return self.standup.call(tool, args)
+        return self.base.call(tool, args)
+
+
 def build_question_graph(checkpointer=None):
     """A graph that knows nothing about devflow: one plain interrupt()."""
     g = StateGraph(QState)
@@ -159,6 +187,7 @@ def build_app(tmp: Path, token: str, delay: float = 0.3) -> App:
                                                                                          "JIRA_API_TOKEN": "s3cret"}},
                           "playwright": {"command": "npx", "args": ["@playwright/mcp@latest"]}}
     raw["repos"]["web"]["app_url"] = "http://localhost:5173"
+    raw["jira_user"] = "me@acme.io"
     (tmp / "workspace.yaml").write_text(__import__("json").dumps(raw))
     web = raw["repos"]["web"]["path"]  # the ticket review's commit, on a branch the developer has checked out
     sh("git", "-C", web, "checkout", "-q", "-b", REVIEW_TICKET)
@@ -167,7 +196,7 @@ def build_app(tmp: Path, token: str, delay: float = 0.3) -> App:
     sh("git", "-C", web, "commit", "-qm", f"{REVIEW_TICKET}: CSV export")
     sh("git", "-C", web, "push", "-q", "-u", "origin", REVIEW_TICKET)
     (tmp / "review-commit.txt").write_text(sh("git", "-C", web, "rev-parse", "--short=9", "HEAD"))
-    llm = DemoLLM(["api", "web"], [("api", "web")], delay=delay, overrides=REVIEW_ANSWERS)
+    llm = DemoLLM(["api", "web"], [("api", "web")], delay=delay, overrides={**REVIEW_ANSWERS, **STANDUP_ANSWERS})
     coder = DemoCoder(delay=delay * 2)
 
     def factory():
@@ -177,6 +206,7 @@ def build_app(tmp: Path, token: str, delay: float = 0.3) -> App:
         def with_e2e(ws_, store):
             deps = make_deps(ws_, store)
             deps.e2e_agent = lambda state, evidence, profile: DemoE2E(evidence, delay * 2)
+            deps.jira = JiraGateway(DemoJira(deps.jira.mcp, ws_.jira_tools.values()), ws_.jira_tools, ws_.status_order)
             return deps
         s._deps_factory = with_e2e
         return s

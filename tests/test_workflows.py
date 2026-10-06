@@ -1,9 +1,7 @@
-import subprocess
-
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
-from dev_workflows.workflows import pr_review, standup, ticket_to_plan as tp
+from dev_workflows.workflows import pr_review, ticket_to_plan as tp
 from fake_llm import FakeLLM
 
 
@@ -54,16 +52,3 @@ def test_pr_review_fans_out_and_sorts_findings():
     assert lenses == {"correctness", "tests", "frontend", "security", "performance"}
     assert len(out["findings"]) == 5
     assert out["output"].index("[blocker]") < out["output"].index("[nit]")
-
-
-def test_standup_reads_git(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEVFLOW_VCS_PREFIX", "")
-    repo = tmp_path / "r"
-    repo.mkdir()
-    run = lambda *a: subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True)
-    run("init", "-q")
-    run("-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-qm", "Add order export endpoint")
-    llm = FakeLLM({standup.Standup: standup.Standup(yesterday=["Shipped order export API"], today=["Frontend button"], blockers=[])})
-    out = standup.build_graph(llm).invoke({"repo_paths": [str(repo)], "since": "1 week ago"})
-    assert "Add order export endpoint" in llm.calls[0][1]
-    assert "- Shipped order export API" in out["output"] and "**Blockers**\n- None" in out["output"]

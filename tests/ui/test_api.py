@@ -47,7 +47,7 @@ def build_test_graph(checkpointer=None):
     llm = ClaudeLLM(client=FakeAnthropic())
 
     def think(s):
-        return {"reply": llm.structured("sys", s["topic"], Echo, step="standup").text}
+        return {"reply": llm.structured("sys", s["topic"], Echo, step="standup.digest").text}
 
     def ask(s):
         return {"answer": interrupt({"question": f"Ship {s['topic']}?"})}

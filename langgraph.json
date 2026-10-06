@@ -1,8 +1,7 @@
 {
   "dependencies": ["."],
   "graphs": {
-    "ticket_to_plan": "./src/dev_workflows/workflows/ticket_to_plan.py:graph",
-    "standup": "./src/dev_workflows/workflows/standup.py:graph"
+    "ticket_to_plan": "./src/dev_workflows/workflows/ticket_to_plan.py:graph"
   },
   "env": ".env"
 }

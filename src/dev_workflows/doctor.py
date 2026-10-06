@@ -123,6 +123,10 @@ def jira_access_checks(ws, jira, source: str = "", ticket: str = "") -> list[Che
                _warn("mcp.jira.attach", "Jira MCP", "Jira MCP can attach files",
                      "no attachment tool: proof screenshots stay local and the comment lists their names",
                      "Map jira_tools.attach to your server's upload tool (mcp-atlassian: jira_update_issue)."))
+    out.append(_ok("mcp.jira.search", "Jira MCP", "Jira MCP can search (JQL)", "search tool present") if rep.get("search") else
+               _warn("mcp.jira.search", "Jira MCP", "Jira MCP can search (JQL)",
+                     f"no JQL search tool ('{ws.jira_tools.get('search')}'): the standup can't find your tickets",
+                     "Map jira_tools.search to your server's JQL search tool (mcp-atlassian: jira_search)."))
     if ticket:
         try:
             jira.status_and_assignee(ticket)

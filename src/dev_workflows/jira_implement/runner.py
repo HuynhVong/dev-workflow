@@ -92,10 +92,10 @@ class Session:
 
     def graph_for(self, workflow: str):
         spec = self.registry.get(workflow)
-        deps = self.deps if spec.kind == "ticket" else None
+        deps = self.deps if spec.uses_deps else None
         with self._lock:
             if workflow not in self._graphs:
-                self._graphs[workflow] = spec.factory(deps, self.saver) if spec.kind == "ticket" else spec.factory(self.saver)
+                self._graphs[workflow] = spec.factory(deps, self.saver) if spec.uses_deps else spec.factory(self.saver)
             return self._graphs[workflow]
 
     def graph(self, run_id: str):
@@ -135,6 +135,8 @@ class Session:
             prepare = spec.ui.get("prepare")
             label, inputs = prepare(values, self.ws) if prepare else (str(values.pop("_label", "") or spec.id), dict(values))
             run_id = f"{workflow}-{stamp}-{uuid.uuid4().hex[:4]}"
+            if spec.uses_deps:  # devflow graphs track their own lifecycle by run_id
+                inputs = {"run_id": run_id, **inputs}
             self.store.create_run(run_id, workflow, "", label=label, inputs=inputs)
         self.store.audit(run_id, "created", {"workflow": workflow, "values": _short(values)})
         return run_id, inputs
@@ -158,7 +160,7 @@ class Session:
                 return self._done(run_id, "is ABORTED. Use `devflow resume --reopen` to continue it from the checkpoint where it was aborted.")
             snap = self.graph(run_id).get_state(self.cfg(run_id))
             at = snap.values.get("aborted_at") or run["checkpoint"]
-            if at and self._spec(run_id).kind == "ticket":
+            if at and self._spec(run_id).uses_deps:
                 self.graph(run_id).update_state(self.cfg(run_id), {"aborted_at": ""}, as_node=at)
             elif not snap.next and not self._pending(snap):
                 return self._done(run_id, "cannot be reopened: no checkpoint recorded")
@@ -191,7 +193,7 @@ class Session:
 
     def abort(self, run_id: str, note: str = "") -> str:
         run = self._run(run_id)
-        if run["status"] == "WAITING_HUMAN" and self._spec(run_id).kind == "ticket":
+        if run["status"] == "WAITING_HUMAN" and self._spec(run_id).uses_deps:
             return self.drive(run_id, Command(resume={"choice": "abort", "note": note}))
         if run["status"] in ("FAILED", "PENDING", "WAITING_HUMAN") or (run["status"] == "RUNNING" and run["stale"]):
             self.store.set_status(run_id, "ABORTED", node=run["node"], checkpoint=run["checkpoint"], detail=note or "aborted")
@@ -382,6 +384,14 @@ def interactive_ask(pc: dict) -> dict:
         ans["run"] = _list(input("Case ids to run (comma list, blank = all): "))
     if name == "review_results" and c == "retest":
         ans["retest"] = _list(input("Case ids to re-test (comma list, blank = the failed and skipped ones): "))
+    if name == "confirm_tickets" and c == "continue":
+        keep = _list(input("Ticket keys to keep (comma list, blank = all): "))
+        if keep:
+            ans["keep"] = keep
+    if name == "review_report" and c == "edit":
+        path = input("Path to a file with your edited report: ").strip()
+        if path:
+            ans["report"] = Path(path).expanduser().read_text()
     if name == "approve_comment" and c == "edit":
         path = input("Path to a file with your edited comment: ").strip()
         if path:

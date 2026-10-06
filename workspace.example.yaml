@@ -53,11 +53,13 @@ mcp_servers:
 
 jira_server: atlassian
 confluence_server: atlassian
-jira_user: you@acme.io              # warns if the ticket is assigned to someone else
+jira_user: you@acme.io              # warns if the ticket is assigned to someone else; the standup's "you"
 
 # Tool names default to sooperset/mcp-atlassian. Override any that differ in your server:
 # jira_tools: {get_issue: jira_get_issue, add_comment: jira_add_comment, edit_comment: jira_edit_comment, ...}
 #   attach: jira_update_issue      (optional) uploads the ticket review's proof screenshots via its `attachments` argument
+#   search: jira_search            (optional) JQL search, needed by the standup
+#   batch_changelogs: jira_batch_get_changelogs   (optional) the standup's fallback when get_issue returns no changelog
 # confluence_tools: {get_page: confluence_get_page, search: confluence_search, ...}
 
 status_order: [To Do, In Progress, Code Review]   # Jira status only ever moves forward
@@ -65,6 +67,10 @@ review_status: Code Review
 vcs_prefix: rtk                     # every git/glab call is `rtk git ...` / `rtk glab ...`
 state_dir: .devflow                 # SQLite checkpoints, audit log and side-effect ledger
 max_fix_attempts: 3                 # automated fix attempts per repo for a whole run, never reset
+
+# Standup / work report: which status moves count (match your board) and the day boundaries' timezone
+# (default: your Jira profile's timezone, else this machine's).
+# standup: {started_from: Approved, started_to: In Progress, review_status: In Review, timezone: Asia/Ho_Chi_Minh}
 
 # Parallel runs. `repos[].path` above is your own clone: devflow never edits or switches it. Each ticket works in
 # its own git worktree, <worktree_root>/<TICKET>/<repo>, so several tickets can run at once.

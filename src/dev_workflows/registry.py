@@ -25,12 +25,18 @@ PALETTE = ["#3491ff", "#42cb80", "#eeb747", "#b78cff", "#ff8a65", "#4dd0e1", "#f
 @dataclass
 class WorkflowSpec:
     id: str
-    factory: Callable[..., Any]          # (deps, checkpointer) for ticket workflows, (checkpointer) otherwise
+    factory: Callable[..., Any]          # (deps, checkpointer) for ticket and jira workflows, (checkpointer) otherwise
     title: str = ""
     description: str = ""
-    kind: str = "graph"                  # "ticket": devflow ticket workflow (worktrees, Jira, preflight); "graph": any graph
+    kind: str = "graph"                  # "ticket": devflow ticket workflow (worktrees, Jira, preflight); "jira": a devflow
+                                         # workflow that needs Jira and checkpoints but no ticket key (standup); "graph": any graph
     source: str = "builtin"
     ui: dict = field(default_factory=dict)
+
+    @property
+    def uses_deps(self) -> bool:
+        """Built with devflow's Deps (Jira, store, routing) and GraphKit checkpoints, so Abort is answered as a choice."""
+        return self.kind in ("ticket", "jira")
 
     def meta(self, index: int = 0) -> dict:
         return {"id": self.id, "title": self.title or self.ui.get("title") or self.id.replace("_", " ").capitalize(),
@@ -52,16 +58,17 @@ def register_workflow(id: str, factory: Callable[..., Any], *, title: str = "", 
 
 
 def _builtins() -> list[WorkflowSpec]:
-    from .jira_implement import address_review, graph, ticket_review
-    from .workflows import standup, ticket_to_plan
+    from .jira_implement import address_review, graph, standup, ticket_review
+    from .workflows import ticket_to_plan
     out = [WorkflowSpec(graph.WORKFLOW, lambda deps, cp: graph.build_graph(deps, checkpointer=cp), kind="ticket", ui=graph.DEVFLOW_UI),
            WorkflowSpec(address_review.WORKFLOW, lambda deps, cp: address_review.build_review_graph(deps, checkpointer=cp),
                         kind="ticket", ui=address_review.DEVFLOW_UI),
            WorkflowSpec(ticket_review.WORKFLOW, lambda deps, cp: ticket_review.build_graph(deps, checkpointer=cp),
-                        kind="ticket", ui=ticket_review.DEVFLOW_UI)]
+                        kind="ticket", ui=ticket_review.DEVFLOW_UI),
+           WorkflowSpec(standup.WORKFLOW, lambda deps, cp: standup.build_graph(deps, checkpointer=cp), kind="jira", ui=standup.DEVFLOW_UI)]
     # pr_review (diff in, Markdown out) is no longer a workflow of its own: it is the code review engine inside the
     # ticket review, jira ticket implement and address-review.
-    for mod, wid in ((ticket_to_plan, "ticket_to_plan"), (standup, "standup")):
+    for mod, wid in ((ticket_to_plan, "ticket_to_plan"),):
         out.append(WorkflowSpec(wid, (lambda m: lambda cp: m.build_graph(checkpointer=cp))(mod), ui=getattr(mod, "DEVFLOW_UI", {})))
     return out
 

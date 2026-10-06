@@ -34,6 +34,8 @@ DEFAULT_JIRA_TOOLS = {
     "edit_comment": "jira_edit_comment",
     "download_attachments": "jira_download_attachments",
     "get_user_profile": "jira_get_user_profile",
+    "search": "jira_search",  # optional: JQL search, used by the standup
+    "batch_changelogs": "jira_batch_get_changelogs",  # optional (Jira Cloud): the standup's fallback for issue history
     "attach": "jira_update_issue",  # optional: uploads files (its `attachments` argument); only ticket review uses it
 }
 DEFAULT_CONFLUENCE_READ_TOOLS = {
@@ -63,6 +65,7 @@ class Workspace:
     prices: dict = field(default_factory=dict)  # USD per million tokens per model, for cost estimates
     ui: dict = field(default_factory=dict)      # graph_sources, port, notifications
     ai: dict = field(default_factory=dict)  # per-step models and skills, see dev_workflows.routing
+    standup: dict = field(default_factory=dict)  # started_from, started_to, review_status, timezone (see jira_implement.standup)
 
     def repo(self, name: str) -> RepoConfig:
         return self.repos[name]
@@ -111,6 +114,7 @@ def load_workspace(path: str | Path) -> Workspace:
         prices=dict(raw.get("prices") or {}),
         ui=dict(raw.get("ui") or {}),
         ai=dict(raw.get("ai") or {}),
+        standup=dict(raw.get("standup") or {}),
     )
 
 

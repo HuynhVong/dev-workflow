@@ -243,7 +243,7 @@ def create_app(state: App) -> FastAPI:
             raise HTTPException(409, {"error": "finished", "detail": f"{run_id} is already {r['status']}"})
         if r["status"] == "RUNNING" and not manager.is_active(run_id) and not r["stale"]:
             raise HTTPException(409, {"error": "elsewhere", "detail": "this run is working in another process (the CLI); abort it there"})
-        if r["status"] == "WAITING_HUMAN" and session._spec(run_id).kind == "ticket":
+        if r["status"] == "WAITING_HUMAN" and session._spec(run_id).uses_deps:
             manager.answer(run_id, {"choice": "abort", "note": body.get("note", "")})
             return {"status": "ABORTING"}
         return {"status": manager.abort(run_id, body.get("note", ""))}

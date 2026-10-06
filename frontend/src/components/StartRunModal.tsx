@@ -112,7 +112,7 @@ export function StartRunModal({ open, initialWorkflow, onClose, onStarted }: {
         {fields.map((f) => (
           <Field key={f.name} field={f} value={values[f.name]} onChange={(v) => setValues({ ...values, [f.name]: v })} repos={meta?.repos ?? []} />
         ))}
-        {wf && !wf.generated_form && wf.kind !== "ticket" ? (
+        {wf && !wf.generated_form && wf.kind === "graph" ? (
           <div>
             <Label htmlFor="label" hint="(optional)">
               Run title
@@ -255,7 +255,7 @@ function Field({ field: f, value, onChange, repos }: { field: FormField; value: 
         <Textarea
           id={id}
           value={text}
-          rows={f.name === "diff" ? 8 : 3}
+          rows={f.name === "diff" || f.name === "template" ? 8 : 3}
           className={cn((f.type === "json" || (f as any).mono) && "font-mono text-xs")}
           placeholder={f.placeholder ?? (f.type === "list" ? "One item per line" : f.type === "json" ? "{ }" : "")}
           onChange={(e) => onChange(f.type === "list" ? e.target.value.split("\n") : e.target.value)}
@@ -269,7 +269,7 @@ function Field({ field: f, value, onChange, repos }: { field: FormField; value: 
       {label}
       <Input
         id={id}
-        type={f.type === "number" ? "number" : "text"}
+        type={f.type === "number" ? "number" : f.type === "date" ? "date" : "text"}
         value={(value as string) ?? ""}
         placeholder={f.placeholder}
         className={cn(f.type === "ticket" && "font-mono uppercase")}
