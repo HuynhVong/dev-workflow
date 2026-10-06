@@ -43,9 +43,9 @@ def check_policy(tool: str, args: Sequence[str]) -> None:
             raise VcsPolicyError(f"forbidden: git {joined}")
         if a[:1] in (["rebase"], ["filter-branch"], ["clean"]):
             raise VcsPolicyError(f"forbidden: git {joined}")
-        if a[:1] == ["worktree"] and (len(a) < 2 or a[1] not in ("add", "list", "remove")
+        if a[:1] == ["worktree"] and (len(a) < 2 or a[1] not in ("add", "list", "remove", "prune")
                                       or (a[1] == "remove" and any(x in ("-f", "--force") for x in a[2:]))):
-            raise VcsPolicyError(f"forbidden: git {joined} (worktrees are only added, listed, or removed when clean)")
+            raise VcsPolicyError(f"forbidden: git {joined} (worktrees are only added, listed, pruned, or removed when clean)")
     else:
         if a[:1] in (["ci"], ["pipeline"], ["job"], ["schedule"], ["variable"]):
             raise VcsPolicyError(f"forbidden: this workflow does not touch CI/CD (glab {joined})")

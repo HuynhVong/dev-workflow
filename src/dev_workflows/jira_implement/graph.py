@@ -322,13 +322,14 @@ class GraphKit:
     def choice(state) -> str:
         return state["last_answer"]["choice"]
 
-    def add_abort(self):
+    def add_abort(self, on_abort: Callable[[dict], str] | None = None):
         store = self.store
 
         def abort(state):
+            extra = on_abort(state) if on_abort else ""
             at = (state.get("last_answer") and state["decisions"][-1]["checkpoint"]) if state.get("decisions") else ""
             store.set_status(state["run_id"], "ABORTED", node="abort", checkpoint=at, detail=(state.get("last_answer") or {}).get("note", ""))
-            return {"aborted_at": at, "output": f"Run {state['run_id']} aborted at {at}. Local branches and edits were left untouched."}
+            return {"aborted_at": at, "output": f"Run {state['run_id']} aborted at {at}. Local branches and edits were left untouched." + extra}
 
         self.g.add_node("abort", abort)
         self.g.add_edge("abort", END)
@@ -1127,7 +1128,16 @@ def build_graph(deps: Deps, checkpointer=None):
     node("summary", summary)
     g.add_edge("summary", END)
 
-    kit.add_abort()
+    def release_worktrees(state):
+        try:
+            res = worktrees.release(deps.workspace, state["ticket_key"], deps.vcs_runner)
+        except Exception:  # noqa: BLE001
+            return ""
+        store.audit(state["run_id"], "worktrees_released", res)
+        return (f" Removed clean worktrees: {', '.join(res['removed'])}." if res["removed"] else "") + \
+               (f" Kept (uncommitted changes): {', '.join(res['kept'])}." if res["kept"] else "")
+
+    kit.add_abort(release_worktrees)
 
     g.add_edge(START, "preflight")
     g.add_edge("preflight", "prepare_worktrees")
