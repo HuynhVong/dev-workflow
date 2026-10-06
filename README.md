@@ -26,6 +26,18 @@ Jira and Confluence. Run them from the `devflow` CLI or the local web app (`devf
 
 ## Setup
 
+On Ubuntu or WSL, install Python and Claude Code first. Ubuntu ships only `python3`; `python-is-python3` adds
+`python`. Ubuntu 22.04 has Python 3.10, so install 3.11+ there (for example from the deadsnakes PPA).
+
+```bash
+sudo apt update && sudo apt install -y python3-venv python3-pip python-is-python3
+python3 --version                             # 3.11 or newer
+curl -fsSL https://claude.ai/install.sh | bash   # Claude Code, if `claude` is not installed yet
+claude                                        # log in once (Pro/Max account, or an API key)
+```
+
+Then, in the repo:
+
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
@@ -35,6 +47,22 @@ devflow setup --ticket AQS-5512               # first-time setup
 devflow doctor                                # every connection check, any time (also in the UI)
 pytest -q                                     # offline tests, no API key needed
 ```
+
+devflow reads settings from the environment only; it does not load `.env` by itself. Either turn on
+`python.terminal.useEnvFile` in VS Code (new terminals then load `.env`), or run `set -a && source .env && set +a` in
+each terminal.
+
+### Windows with WSL and VS Code
+
+Clone the repo inside WSL (for example `~/workspace/dev-workflow`), install the **WSL** extension in Windows VS Code,
+then run `code .` from the repo folder in the Ubuntu terminal. The bottom-left corner should show **WSL: Ubuntu**.
+
+- `code` not found: reinstall VS Code on Windows with "Add to PATH" ticked, run `wsl --shutdown` in PowerShell, reopen
+  Ubuntu.
+- "Failed to connect to the remote extension host server (1006)": update VS Code, close it, run `wsl --shutdown`, then
+  `rm -rf ~/.vscode-server` in Ubuntu and `code .` again. Check `df -h ~` too; a full disk causes the same error.
+- `claude` not found after installing packages: add `~/.local/bin` to PATH
+  (`echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc`) or rerun the Claude Code installer.
 
 `devflow setup` finds the Jira MCP in `workspace.yaml` or in Claude Code's own MCP servers, checks that it answers,
 can read tickets (and the one you name), and whether it can comment and attach files. It also shows the model of
