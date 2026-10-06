@@ -19,7 +19,8 @@ from typing_extensions import TypedDict
 
 from .. import doctor
 from .confluence import compact_pages, page_ids_from_urls
-from .graph import SYSTEM, TRANSIENT, Deps, GraphKit, PreflightFailed, _j, _tail, diff_digest
+from ..textutil import diffs_block
+from .graph import SYSTEM, TRANSIENT, Deps, GraphKit, PreflightFailed, _j, _tail
 from .jira import IMAGE_EXT, JiraWriteRefused, marker
 from .ledger import Effect, perform
 from .mcp_config import has_playwright
@@ -30,7 +31,6 @@ WORKFLOW = "ticket_review"
 STEPS = ("ticket_review.understand", "pr_review.triage", "pr_review.lens", "pr_review.verdict", "ticket_review.coverage",
          "ticket_review.test_plan", "ticket_review.e2e", "ticket_review.comment")
 SHA = re.compile(r"^[0-9a-fA-F]{7,40}$")
-DIFF_LIMIT = 80000
 
 FORM = [
     {"name": "ticket", "label": "Jira ticket", "type": "ticket", "required": True, "placeholder": "AQS-5512"},
@@ -274,8 +274,7 @@ def build_graph(deps: Deps, checkpointer=None):
         vcs = deps.vcs(state)
         out = {}
         for r, shas in state["commits"].items():
-            text = "\n\n".join(vcs.show_commit(r, s) for s in shas)
-            out[r] = text if len(text) <= DIFF_LIMIT else text[:DIFF_LIMIT] + "\n…(diff truncated)"
+            out[r] = "\n\n".join(vcs.show_commit(r, s) for s in shas)  # pr_review and the coverage check digest it
         return out
 
     # 3 code review -------------------------------------------------------------------------------------------------
@@ -288,7 +287,7 @@ def build_graph(deps: Deps, checkpointer=None):
                                    "description": ticket_block(state), "diff": diff, "findings": []})
             reviews[r] = {"decision": out["verdict"].decision, "summary": out["verdict"].summary, "risk": out["triage"].risk,
                           "findings": [f.model_dump() for f in out["findings"]]}
-        cov = llm.structured(SYSTEM, ticket_block(state) + f"\n<commits_by_repo>\n{_j({r: diff_digest(d) for r, d in diffs.items()})}\n</commits_by_repo>\n\n"
+        cov = llm.structured(SYSTEM, ticket_block(state) + f"\n<commits_by_repo>\n{diffs_block(diffs)}\n</commits_by_repo>\n\n"
                              "For every acceptance criterion, say whether these commits implement it (met, partial, missing or "
                              "unclear) with the evidence. Then list changes the ticket does not ask for.",
                              Coverage, step="ticket_review.coverage")

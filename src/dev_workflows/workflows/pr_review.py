@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from typing_extensions import NotRequired, TypedDict
 
 from ..llm import StructuredLLM, default_llm
+from ..textutil import diff_digest
 
 Lens = Literal["correctness", "security", "performance", "tests", "frontend"]
 Severity = Literal["blocker", "major", "minor", "nit"]
@@ -82,6 +83,11 @@ class LensTask(TypedDict):
     diff: str
 
 
+# Every lens reads the whole diff, so the diff is sent once per lens (2 to 5) plus once to triage. Over its budget a diff
+# is digested (file list with +/- counts, whole files while they fit) rather than sent in full to each of them.
+TRIAGE_DIFF = 8000   # triage only picks lenses and a risk level: the file list and the first files are enough
+LENS_DIFF = 30000
+
 SYSTEM = (
     "You are a careful senior reviewer on a full-stack team. Report only issues you can "
     "point to in the diff. Never pad the review; an empty list is a fine answer."
@@ -98,7 +104,7 @@ def build_graph(llm: StructuredLLM | None = None, checkpointer=None):
 
     def triage(state: State):
         t = get_llm().structured(
-            SYSTEM, _pr(state["title"], state.get("description", ""), state["diff"]) + "\n\nTriage this PR.", Triage, step="pr_review.triage"
+            SYSTEM, _pr(state["title"], state.get("description", ""), diff_digest(state["diff"], TRIAGE_DIFF)) + "\n\nTriage this PR.", Triage, step="pr_review.triage"
         )
         lenses = set(t.lenses) | {"correctness", "tests"}
         if t.touches_frontend:
@@ -110,7 +116,7 @@ def build_graph(llm: StructuredLLM | None = None, checkpointer=None):
     def fan_out(state: State):
         return [
             Send("review", {"lens": lens, "title": state["title"],
-                            "description": state.get("description", ""), "diff": state["diff"]})
+                            "description": state.get("description", ""), "diff": diff_digest(state["diff"], LENS_DIFF)})
             for lens in state["triage"].lenses
         ]
 

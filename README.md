@@ -156,6 +156,20 @@ The AI steps run in one of two ways, picked by `DEVFLOW_LLM_BACKEND` (default `a
 
 The coding steps always run through Claude Code. `devflow doctor` shows which backend is in use.
 
+### How devflow keeps token use down
+
+Each Claude Code call loads context you did not ask for, so devflow turns it off (numbers measured on a one-line edit):
+
+- **Coding agents** get only Read/Edit/Write/Glob/Grep/Bash (no sub-agents, web or todo tools), no skill listing, and
+  the step's skills (at most 2, 4,000 characters) in the system prompt: 30k to 8k tokens in the first call. They stop
+  after 120 turns (30 to explore), run the repo's checks themselves, and the fix loop stops when a fix leaves the same
+  check failing. `DEVFLOW_AGENT_PROMPT=default` uses Claude Code's own system prompt instead of devflow's short one.
+- **Structured AI steps** run in an empty folder with `--setting-sources project`, so your `~/.claude` CLAUDE.md, hooks
+  and plugins are not sent with every call.
+- **Jira and Confluence calls** through Claude Code stop after the tool runs (`--max-turns`), so a big issue with its
+  comments is never sent back to the model: 9.6k to 1.8k tokens for a 60-comment issue.
+- **Prompts** carry diffs as per-file digests (8k to 30k characters), compact JSON, and Confluence pages as plain text.
+
 ## Usage
 
 ### Ticket to plan
@@ -293,6 +307,7 @@ src/dev_workflows/
                         Claude Code login (DEVFLOW_LLM_BACKEND); swap-able for tests
   registry.py          every workflow the UI and CLI can run, found by discovery
   doctor.py            setup checks (`devflow setup`, `devflow doctor`), shared by preflight and the UI
+  textutil.py          diff digests for prompts (file list + whole files that fit, never a diff cut mid-file)
   telemetry.py         token usage and coding-agent activity, recorded per run and node
   workflows/
     ticket_to_plan.py    ticket to plan

@@ -119,8 +119,16 @@ def test_replies_are_not_duplicated_after_a_crash(tmp_path):
     assert len(mcp.comments) == 1
 
 
-def test_fix_budget_pauses_at_three_for_this_run(tmp_path):
+def test_a_fix_that_leaves_the_same_failure_stops_after_one_attempt(tmp_path):
     ws, g, cfg, out, store, mcp, coder = setup(tmp_path, [plan(T_WEB, "web", "fix")], repos=("web",), checks={"web": "false"})
+    out = answer(g, cfg, choice="approve")
+    assert at(out) == "budget_exhausted"
+    assert len([c for c in coder.calls if c[0] == "implement"]) == 2  # first fix + 1 attempt
+    assert g.get_state(cfg).values["repos"]["web"]["fix_attempts_used"] == 1
+
+
+def test_fix_budget_pauses_at_three_for_this_run(tmp_path):
+    ws, g, cfg, out, store, mcp, coder = setup(tmp_path, [plan(T_WEB, "web", "fix")], repos=("web",), checks={"web": "echo $$ | tr 0-9 a-j; false"})
     out = answer(g, cfg, choice="approve")
     assert at(out) == "budget_exhausted"
     assert len([c for c in coder.calls if c[0] == "implement"]) == 4  # first fix + 3 attempts

@@ -218,7 +218,11 @@ class ClaudeCodeMcp:
         )
         cmd = [self.binary, "-p", "--output-format", "stream-json", "--verbose", "--model", self.model, "--tools", "",
                "--allowedTools", *allowed, "--no-session-persistence", "--system-prompt", SYSTEM_PROMPT,
-               "--disable-slash-commands", *self._hidden(allowed)]
+               "--disable-slash-commands", *self._hidden(allowed),
+               # The tool runs in turn 1 and its result is read from the stream. Without a turn limit Claude Code sends
+               # that result (a whole issue with its comments and history) back to the model just to say DONE: measured
+               # 9.6k -> 1.8k input tokens for a 60-comment issue. A helper lookup (cloudId) needs one turn before the call.
+               "--max-turns", str(len(helpers) + 1)]
         started = time.time()
         for _ in range(2):  # the server can still be connecting when the model starts: then it is not called
             with tempfile.TemporaryDirectory(prefix="devflow-mcp-") as cwd:
