@@ -20,7 +20,8 @@ Jira and Confluence. Run them from the `devflow` CLI or the local web app (`devf
   (see [MCP servers from your Claude Code login](#mcp-servers-from-your-claude-code-login)).
 - **Confluence MCP**. Read access is enough: every workflow treats Confluence as strictly read-only and never exposes
   its write tools.
-- **Playwright MCP**, for repos with a UI and for the ticket review.
+- **Playwright MCP**, for repos with a UI and for the ticket review. Jira, Confluence and Playwright can each be a
+  server from your Claude Code login, picked in `devflow setup`.
 - `git` and/or `glab` installed and authenticated. For a self-hosted GitLab, log glab in to that host:
   `glab auth login --hostname gitlab.yourcompany.com` (a personal access token with `api`, `read_repository`,
   `write_repository`). `devflow doctor` checks the login only for the hosts your repos' `origin` remotes use.
@@ -89,6 +90,13 @@ stays read-only: its write tools are never allowed. The official Atlassian conne
 upload attachments or to edit a comment, so with it ticket attachments are not downloaded, review screenshots stay
 local, and devflow adds its comment once instead of updating it. `devflow doctor` shows each chosen server's state;
 if one needs a sign-in, run `claude`, then `/mcp`.
+
+**MCP servers devflow starts itself** (under `mcp_servers` in `workspace.yaml`, or found in Claude Code's config
+files when `claude_code_mcp` is blank) run with your shell's environment, like Claude Code runs them, so a server
+that reads `JIRA_URL` or `JIRA_API_TOKEN` from the shell or `.env` sees them; the server's own `env` block wins.
+`${VAR}` and `${VAR:-default}` are expanded in its command, args, env, URL and headers. stdio, HTTP and SSE
+(`type: sse`) servers are supported. When a call fails, Preflight, `devflow doctor` and the UI show the server's
+real error (and the end of its stderr if it crashed at start-up), not a generic "TaskGroup" message.
 
 ### Models
 
@@ -240,7 +248,8 @@ src/dev_workflows/
                         answer | resume | abort | status | show | runs | worktrees | worktree-clean`
   config.py            default model and max tokens; effort is fixed at medium
   routing.py           model per step (Haiku / Sonnet / Opus) and the global Claude Code skills each step uses
-  llm.py               one Claude call helper (structured output via Pydantic); swap-able for tests
+  llm.py               one Claude call helper (structured output via Pydantic): the API, or `claude -p` on your
+                        Claude Code login (DEVFLOW_LLM_BACKEND); swap-able for tests
   registry.py          every workflow the UI and CLI can run, found by discovery
   doctor.py            setup checks (`devflow setup`, `devflow doctor`), shared by preflight and the UI
   telemetry.py         token usage and coding-agent activity, recorded per run and node
@@ -254,7 +263,9 @@ src/dev_workflows/
     standup.py           standup / work report (date range + your template, tickets from Jira history)
     dag.py               repo dependency DAG and waves
     workspace.py         workspace.yaml loader
-    mcp_client.py        MCP client; mcp_config.py finds the Jira MCP in workspace.yaml or Claude Code
+    mcp_client.py        devflow's own MCP client (stdio, HTTP, SSE); reports the server's real error
+    mcp_config.py        picks the client per server: claude_code_mcp, workspace.yaml, or Claude Code's config
+    claude_code_mcp.py   Jira/Confluence through the logged-in Claude Code's MCP servers (`claude -p`, one tool)
     vcs.py               the only place git/glab run: always `rtk git|glab`, deny-list, scope check
     scope.py             frozen repo allow-list (--repos)
     coding_agent.py      Claude Code (Agent SDK) launcher + per-tool policy hook
@@ -268,7 +279,7 @@ frontend/              the web app source (React, TypeScript, Vite, Tailwind, Re
 docs/                  the approved designs: jira-ticket-implement, devflow-ui-plan, ticket-review, standup
 tests/                 offline tests with a fake LLM, fake rtk/glab/MCP and real git repos; tests/ui has the API
                        tests and the demo server
-workspace.example.yaml repos, checks, MCP servers, Jira tool names, models per step
+workspace.example.yaml repos, checks, MCP servers (or claude_code_mcp), Jira tool names, models per step
 langgraph.json         lets `langgraph dev` / LangGraph Studio load ticket_to_plan
 ```
 
@@ -287,7 +298,8 @@ langgraph.json         lets `langgraph dev` / LangGraph Studio load ticket_to_pl
 
 Everything above is built and covered by offline tests (pytest plus Playwright e2e against the demo server). It has
 not yet had a live run against real Jira, GitLab and Confluence, so MCP tool names, Jira status names, changelog
-paging and `rtk` output may need adjusting on first use (tool names are overridable under `jira_tools`).
+paging and `rtk` output may need adjusting on first use (tool names are overridable under `jira_tools`). The Claude
+Code connector path was checked with a stand-in Atlassian-style server, not yet with the real Atlassian connector.
 
 Not built yet: a Jira summary preview while typing the ticket key, an MR and thread preview in the address-review
 start form, and phase 5 of the UI plan (light theme, desktop app).
