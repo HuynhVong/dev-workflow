@@ -25,6 +25,16 @@ T = TypeVar("T", bound=BaseModel)
 
 
 IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+# A ticket can carry dozens of screenshots and every step that gets images sends all of them (about 1.5k tokens each).
+# The API also rejects an image over 5 MB, which would fail the whole call after its other tokens were spent.
+MAX_IMAGES, MAX_IMAGE_BYTES = 6, 5 * 1024 * 1024
+
+
+def usable_images(paths: Sequence[str]) -> list[str]:
+    """The image files worth sending: supported types under the size limit, the first MAX_IMAGES of them."""
+    ok = [str(p) for p in paths if mimetypes.guess_type(str(p))[0] in IMAGE_TYPES and Path(p).is_file()
+          and Path(p).stat().st_size <= MAX_IMAGE_BYTES]
+    return ok[:MAX_IMAGES]
 
 
 class StructuredLLM(Protocol):
@@ -33,7 +43,7 @@ class StructuredLLM(Protocol):
 
 def _image_blocks(paths: Sequence[str]) -> list[dict]:
     blocks = []
-    for p in paths:
+    for p in usable_images(paths):
         media_type = mimetypes.guess_type(p)[0]
         if media_type not in IMAGE_TYPES:
             continue
@@ -109,7 +119,7 @@ class ClaudeCliLLM:
         effort = self.routing.effort(model)
         if step:
             system += skills_system_block(self.routing.skills(step))
-        images = [str(Path(p).resolve()) for p in images if mimetypes.guess_type(p)[0] in IMAGE_TYPES]
+        images = [str(Path(p).resolve()) for p in usable_images(images)]
         if images:
             # Claude Code reads images with its Read tool, the only tool it gets.
             prompt += "\n\nRead these images with the Read tool before answering:\n" + "\n".join(f"- {p}" for p in images)

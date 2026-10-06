@@ -293,6 +293,7 @@ src/dev_workflows/
                         Claude Code login (DEVFLOW_LLM_BACKEND); swap-able for tests
   registry.py          every workflow the UI and CLI can run, found by discovery
   doctor.py            setup checks (`devflow setup`, `devflow doctor`), shared by preflight and the UI
+  textutil.py          diff digests for prompts (file list + whole files that fit, never a diff cut mid-file)
   telemetry.py         token usage and coding-agent activity, recorded per run and node
   workflows/
     ticket_to_plan.py    ticket to plan

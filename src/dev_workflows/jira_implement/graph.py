@@ -23,6 +23,7 @@ from typing_extensions import NotRequired, TypedDict
 
 from ..llm import AsStep, StructuredLLM
 from ..routing import Routing
+from ..textutil import diff_digest, diffs_block  # noqa: F401  (diff_digest is re-exported for the other workflows)
 from . import dag as dagmod
 from . import worktrees
 from .coding_agent import ClaudeCodeAgent, CodingAgent
@@ -237,6 +238,12 @@ def playwright_config(cfg: dict, output_dir: str, profile_dir: str) -> dict:
     return {**cfg, "args": args}
 
 
+# Prompt budgets (characters, about 4 per token) for code a step reads. A diff over its budget is digested (file list
+# with +/- counts, whole files while they fit), never cut in the middle of a file.
+UPSTREAM_DIFF = 8000    # what finished upstream repos changed, shown to the agent coding a downstream repo
+CROSS_REPO_DIFF = 15000  # per repo, for the contract checks that compare repos
+
+
 def _j(obj: Any) -> str:
     """Compact JSON for prompts: indentation costs tokens and tells the model nothing."""
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False, default=str)
@@ -244,32 +251,6 @@ def _j(obj: Any) -> str:
 
 def _tail(text: str, n: int = 4000) -> str:
     return text if len(text) <= n else "…" + text[-n:]
-
-
-def diff_digest(diff: str, n: int = 15000) -> str:
-    """A diff that fits in `n` chars: whole when it does, else the list of changed files with their +/- line counts,
-    then whole file sections in order while they fit, then the names of the files left out."""
-    if len(diff) <= n:
-        return diff
-    sections = [s for s in re.split(r"(?m)^(?=diff --git )", diff) if s.strip()]
-    def name(sec: str) -> str:
-        m = re.match(r"diff --git a/(\S+)", sec)
-        return m.group(1) if m else sec.splitlines()[0][:100]
-    def counts(sec: str) -> str:
-        lines = sec.splitlines()
-        add = sum(1 for x in lines if x.startswith("+") and not x.startswith("+++"))
-        rem = sum(1 for x in lines if x.startswith("-") and not x.startswith("---"))
-        return f"+{add}/-{rem}"
-    head = "Changed files:\n" + "\n".join(f"  {name(x)} {counts(x)}" for x in sections) + "\n\n"
-    out, left, budget = [], [], n - len(head)
-    for sec in sections:
-        if len(sec) <= budget:
-            out.append(sec)
-            budget -= len(sec)
-        else:
-            left.append(name(sec))
-    note = f"\n(diff of {', '.join(left)} left out to save space; read those files if they matter)\n" if left else ""
-    return head + "".join(out) + note
 
 
 class GraphKit:
@@ -485,10 +466,13 @@ def build_graph(deps: Deps, checkpointer=None):
 
     node("gather_context", gather_context, retry_policy=TRANSIENT)
 
-    def _ticket_block(state) -> str:
+    def _ticket_block(state, context: bool = True) -> str:
+        """The ticket and, unless `context` is False, the Confluence requirement context (the largest part of it). Steps
+        that already hold the analysis or the plan leave the context out."""
         t = state["ticket"]
-        parts = [f"<ticket key='{t['key']}'><title>{t['title']}</title>\n<description>\n{t['description']}\n</description></ticket>",
-                 f"<requirement_context>\n{_j(state.get('context', {}))}\n</requirement_context>"]
+        parts = [f"<ticket key='{t['key']}'><title>{t['title']}</title>\n<description>\n{t['description']}\n</description></ticket>"]
+        if context:
+            parts.append(f"<requirement_context>\n{_j(state.get('context', {}))}\n</requirement_context>")
         if state.get("answers"):
             parts.append("<developer_answers>\n" + "\n---\n".join(state["answers"]) + "\n</developer_answers>")
         return "\n".join(parts)
@@ -756,7 +740,7 @@ def build_graph(deps: Deps, checkpointer=None):
                         rs["status"] = "blocked_budget"
                         break
                     rs["fix_attempts_used"] = rs.get("fix_attempts_used", 0) + 1
-                upstream = {u: _tail(vcs.diff_against(u, f"origin/{ws.repo(u).base_branch}"), 15000) for u in payload["upstream"]}
+                upstream = {u: diff_digest(vcs.diff_against(u, f"origin/{ws.repo(u).base_branch}"), UPSTREAM_DIFF) for u in payload["upstream"]}
                 instructions = _implement_prompt(payload, repo, rs, feedback, upstream)
                 res = coder.implement(repo, path, instructions, step="targeted_fix" if rs.get("fix_attempts_used") else "implement",
                                       escalate=rs.get("fix_attempts_used", 0) >= cap)  # the last attempt gets the stronger model
@@ -859,8 +843,8 @@ def build_graph(deps: Deps, checkpointer=None):
         has = lambda kind: any(ws.repo(r).commands.get(kind) for r in nodes)  # noqa: E731
         if not feedback and imp["integration_required"] and not has("integration"):
             vcs = deps.vcs(state)
-            diffs = {r: _tail(vcs.diff_against(r, f"origin/{ws.repo(r).base_branch}"), 30000) for r in nodes}
-            cc = llm.structured(SYSTEM, f"<contracts>{_j(state['plan']['contracts'])}</contracts>\n<diffs>{_j(diffs)}</diffs>\n\n"
+            diffs = {r: vcs.diff_against(r, f"origin/{ws.repo(r).base_branch}") for r in nodes}
+            cc = llm.structured(SYSTEM, f"<contracts>{_j(state['plan']['contracts'])}</contracts>\n{diffs_block(diffs, CROSS_REPO_DIFF)}\n\n"
                                 "Check that every repo implements the fixed contracts consistently (producer and consumer agree on "
                                 "routes, fields, types, events, migrations).", ContractCheck, step="integration_check")
             report["contracts"] = cc.model_dump()
@@ -915,7 +899,7 @@ def build_graph(deps: Deps, checkpointer=None):
         for repo in state["dag"]["nodes"]:
             diff = vcs.diff_against(repo, f"origin/{ws.repo(repo).base_branch}")
             out = reviewer.invoke({"title": f"{state['ticket_key']} ({repo})", "description": _j(state["repos"][repo].get("tasks", [])),
-                                   "diff": _tail(diff, 60000), "findings": []})
+                                   "diff": diff, "findings": []})
             reviews[repo] = {"decision": out["verdict"].decision, "summary": out["verdict"].summary,
                              "findings": [f.model_dump() for f in out["findings"]]}
             feedback += [{"source": "review", "repos": [repo], "text": f"[{f.severity}] {f.file}:{f.line or '?'} {f.title}: {f.detail} -> {f.suggestion}"}
@@ -926,10 +910,10 @@ def build_graph(deps: Deps, checkpointer=None):
 
     def contract_review(state):
         vcs = deps.vcs(state)
-        diffs = {r: _tail(vcs.diff_against(r, f"origin/{ws.repo(r).base_branch}"), 30000) for r in state["dag"]["nodes"]}
+        diffs = {r: vcs.diff_against(r, f"origin/{ws.repo(r).base_branch}") for r in state["dag"]["nodes"]}
         cr = llm.structured(SYSTEM, (
             f"<plan>{_j(state['plan'])}</plan>\n<merge_order>{state['dag']['merge_order']}</merge_order>\n"
-            f"<acceptance_criteria>{_j(state['analysis']['acceptance_criteria'])}</acceptance_criteria>\n<diffs>{_j(diffs)}</diffs>\n\n"
+            f"<acceptance_criteria>{_j(state['analysis']['acceptance_criteria'])}</acceptance_criteria>\n{diffs_block(diffs, CROSS_REPO_DIFF)}\n\n"
             "Cross-repo review: producer/consumer contract agreement, migrations matching the code that uses them, a merge "
             "order that is safe to deploy, and every acceptance criterion covered somewhere. Only real blockers."), ContractReview, step="contract_review")
         feedback = list(state.get("pending_feedback") or []) + [{"source": "contract_review", "repos": b.repos, "text": b.issue} for b in cr.blockers]
@@ -949,7 +933,7 @@ def build_graph(deps: Deps, checkpointer=None):
         repos = state["repos"]
         status = {r: {"fix_attempts_used": rs.get("fix_attempts_used", 0), "status": rs["status"]} for r, rs in repos.items()}
         fa = llm.structured(SYSTEM, (
-            _ticket_block(state)
+            _ticket_block(state, context=False)
             + f"\n<plan>{_j(state['plan'])}</plan>\n<dag>{_j(state['dag'])}</dag>\n<repos_in_scope>{list(state['scope'])}</repos_in_scope>\n"
             f"<repo_status>{_j(status)}</repo_status>\n<feedback>{_j(items_in)}</feedback>\n\n"
             "Classify each feedback item. Decide which repos must change, the cause and your confidence. Use requirement_gap "
@@ -1129,7 +1113,7 @@ def build_graph(deps: Deps, checkpointer=None):
             vcs = deps.vcs(state)
             stat = {r: vcs.git(r, "diff", "--stat", f"{state['repos'][r].get('base_sha', '')}..HEAD", check=False) for r in state["dag"]["nodes"]}
             outdated = llm.structured(SYSTEM, (
-                f"<confluence_pages>{_j(pages)}</confluence_pages>\n<requirement_context>{_j(state.get('context'))}</requirement_context>\n"
+                f"<requirement_context>{_j(state.get('context'))}</requirement_context>\n"
                 f"<changes>{_j(stat)}</changes>\n\nList Confluence pages that look out of date after this change (the developer cannot "
                 "edit Confluence; the page owner will). Empty if none."), Outdated, step="summary").model_dump()["pages"]
         md = _render_summary(state, outdated)

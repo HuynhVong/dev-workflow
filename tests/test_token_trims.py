@@ -48,3 +48,49 @@ def test_coding_agent_loads_only_its_own_mcp_servers_unless_playwright_is_accoun
     assert deps({})._strict_mcp({}) is True
     assert deps({"playwright": "pw"})._strict_mcp({"pw": {"command": "npx"}}) is True
     assert deps({"playwright": "claude.ai Playwright"})._strict_mcp({}) is False
+
+
+def test_diffs_block_is_raw_text_per_repo_and_digested():
+    from dev_workflows.textutil import diffs_block
+    small = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n+one \"quoted\"\n"
+    big = "diff --git a/big.sql b/big.sql\n--- a/big.sql\n+++ b/big.sql\n" + "+row\n" * 5000
+    out = diffs_block({"api": small, "web": big, "empty": ""}, 1500)
+    assert "<diff repo='api'>" in out and '+one "quoted"' in out and "\\n" not in out  # not JSON-escaped
+    assert "big.sql +5000/-0" in out and out.count("+row") == 0 and "<diff repo='empty'>\n(no changes)" in out
+
+
+def test_pr_review_sends_the_diff_digested_to_triage_and_every_lens():
+    from fake_llm import FakeLLM
+    from dev_workflows.workflows import pr_review
+    from dev_workflows.workflows.pr_review import LENS_DIFF, TRIAGE_DIFF
+
+    files = "".join(f"diff --git a/f{i}.py b/f{i}.py\n--- a/f{i}.py\n+++ b/f{i}.py\n" + "+x = 1\n" * 1500 for i in range(12))
+    seen = {}
+
+    class Spy:
+        def structured(self, system, prompt, schema, images=(), step=""):
+            seen.setdefault(step, []).append(len(prompt))
+            if schema is pr_review.Triage:
+                return pr_review.Triage(summary="s", touches_frontend=False, risk="low", lenses=["correctness"])
+            if schema is pr_review.LensReview:
+                return pr_review.LensReview(findings=[])
+            return pr_review.Verdict(decision="approve", summary="ok")
+
+    pr_review.build_graph(Spy()).invoke({"title": "t", "description": "", "diff": files, "findings": []})
+    assert len(files) > 100000
+    assert max(seen["pr_review.triage"]) < TRIAGE_DIFF + 1500
+    assert len(seen["pr_review.lens"]) == 2 and max(seen["pr_review.lens"]) < LENS_DIFF + 1500
+
+
+def test_ticket_images_are_capped_and_oversized_ones_skipped(tmp_path):
+    from dev_workflows.llm import MAX_IMAGES, usable_images
+    paths = []
+    for i in range(MAX_IMAGES + 4):
+        p = tmp_path / f"s{i}.png"
+        p.write_bytes(b"x")
+        paths.append(str(p))
+    big = tmp_path / "huge.png"
+    big.write_bytes(b"x" * (5 * 1024 * 1024 + 1))
+    (tmp_path / "notes.txt").write_text("x")
+    got = usable_images([str(big), str(tmp_path / "notes.txt"), str(tmp_path / "missing.png"), *paths])
+    assert got == paths[:MAX_IMAGES]
