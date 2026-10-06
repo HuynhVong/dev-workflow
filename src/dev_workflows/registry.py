@@ -58,9 +58,10 @@ def register_workflow(id: str, factory: Callable[..., Any], *, title: str = "", 
 
 
 def _builtins() -> list[WorkflowSpec]:
-    from .jira_implement import address_review, graph, standup, ticket_review
+    from .jira_implement import address_review, free_implement, graph, standup, ticket_review
     from .workflows import ticket_to_plan
     out = [WorkflowSpec(graph.WORKFLOW, lambda deps, cp: graph.build_graph(deps, checkpointer=cp), kind="ticket", ui=graph.DEVFLOW_UI),
+           WorkflowSpec(free_implement.WORKFLOW, free_implement.factory, kind="ticket", ui=free_implement.DEVFLOW_UI),
            WorkflowSpec(address_review.WORKFLOW, lambda deps, cp: address_review.build_review_graph(deps, checkpointer=cp),
                         kind="ticket", ui=address_review.DEVFLOW_UI),
            WorkflowSpec(ticket_review.WORKFLOW, lambda deps, cp: ticket_review.build_graph(deps, checkpointer=cp),

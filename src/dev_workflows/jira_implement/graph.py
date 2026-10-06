@@ -13,7 +13,7 @@ import os
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Annotated, Any, Callable
 
@@ -25,6 +25,7 @@ from ..llm import AsStep, StructuredLLM
 from ..routing import Routing
 from ..textutil import diff_digest, diffs_block  # noqa: F401  (diff_digest is re-exported for the other workflows)
 from . import dag as dagmod
+from . import mockups, task_inputs
 from . import worktrees
 from .coding_agent import ClaudeCodeAgent, CodingAgent
 from .confluence import ConfluenceReader, compact_pages, page_ids_from_urls
@@ -32,7 +33,7 @@ from .jira import JiraGateway, marker
 from .ledger import Effect, Store, perform
 from .mcp_client import TransientToolError
 from .mcp_config import playwright_servers, sql_servers
-from .models import (Analysis, ContractCheck, ContractReview, FeedbackAnalysis, Impact, Outdated, Plan,
+from .models import (ManualTest, Analysis, ContractCheck, ContractReview, FeedbackAnalysis, Impact, Outdated, Plan,
                      RequirementContext)
 from .scope import ScopeGuard, ScopeViolation
 from .vcs import Vcs, VcsError
@@ -53,6 +54,12 @@ TICKET_FORM = [
     {"name": "ticket", "label": "Jira ticket", "type": "ticket", "required": True, "placeholder": "AQS-5512"},
     {"name": "repos", "label": "Repos", "type": "repos", "help": "Hard allow-list. Empty means every repo in workspace.yaml."},
 ]
+IMPLEMENT_FORM = TICKET_FORM + [
+    {"name": "images", "label": "Mockups / images", "type": "images",
+     "help": "Optional. Drag, browse or paste (Ctrl+V) up to 6 images of how it should look. They are read once into a written brief."},
+    {"name": "note", "label": "Notes", "type": "textarea",
+     "placeholder": "Optional: what the images mean, what must match, what to avoid. Your notes win over the ticket text."},
+]
 CHECKPOINT_TITLES = {
     "clarify": "Answer open questions", "approve_plan": "Approve the plan", "branch_ownership": "Reuse existing branches",
     "scope_request": "Approve a repo outside scope", "budget_exhausted": "Fix attempts used up", "manual_test": "Manual test",
@@ -64,13 +71,14 @@ HIDDEN_NODES = ["schedule", "apply_clarify", "apply_scope", "apply_route_ask", "
 DEVFLOW_UI = {
     "title": "Jira ticket implement",
     "description": "One Jira key to draft GitLab MRs across several repos, with your plan approval, manual test and push approval.",
-    "icon": "git-pull-request", "color": "#3491ff", "form": TICKET_FORM, "checkpoints": CHECKPOINT_TITLES, "hidden_nodes": HIDDEN_NODES,
-    "steps": ["preflight", "prepare_worktrees", "fetch_ticket", "gather_context", "analyze_requirements", "change_impact",
+    "icon": "git-pull-request", "color": "#3491ff", "form": IMPLEMENT_FORM, "checkpoints": CHECKPOINT_TITLES, "hidden_nodes": HIDDEN_NODES,
+    "dev_inputs": True,
+    "steps": ["preflight", "prepare_worktrees", "fetch_ticket", "read_mockups", "gather_context", "analyze_requirements", "change_impact",
               "discover_repos", "plan_implementation", "approve_plan", "prepare_branches", "implement_repo", "integration_check",
               "manual_test", "repo_review", "contract_review", "approve_push", "commit_and_push", "open_draft_mrs", "jira_update",
               "summary"],
     "nodes": {
-        "preflight": "Preflight", "prepare_worktrees": "Prepare worktrees", "fetch_ticket": "Fetch ticket",
+        "preflight": "Preflight", "prepare_worktrees": "Prepare worktrees", "fetch_ticket": "Fetch ticket", "read_mockups": "Read mockups",
         "gather_context": "Gather context", "analyze_requirements": "Analyze requirements", "change_impact": "Change impact",
         "clarify": "Clarify", "discover_repos": "Discover repos", "plan_implementation": "Plan implementation",
         "approve_plan": "Approve plan", "prepare_branches": "Prepare branches", "branch_ownership": "Branch ownership",
@@ -82,7 +90,8 @@ DEVFLOW_UI = {
     },
     "node_details": {
         "preflight": "Tools, MCP servers, repos and worktrees checked", "prepare_worktrees": "One worktree per repo for this ticket",
-        "fetch_ticket": "Ticket, attachments and links from Jira", "gather_context": "Jira, Confluence (read only) and open MRs",
+        "fetch_ticket": "Ticket, attachments and links from Jira",
+        "read_mockups": "Your images, Jira's images and your notes read once into a written brief", "gather_context": "Jira, Confluence (read only) and open MRs",
         "analyze_requirements": "Acceptance criteria and open questions", "change_impact": "Layers, repos, contracts and risk",
         "discover_repos": "Relevant code in each candidate repo", "plan_implementation": "Tasks per repo and the dependency DAG",
         "approve_plan": "Your decision", "prepare_branches": "Branch from a freshly fetched develop",
@@ -120,6 +129,15 @@ class State(TypedDict, total=False):
     env_warnings: list[str]
     ticket: dict
     context: dict
+    branch: str
+    ref: str
+    task: str
+    dev_images: list[str]
+    dev_notes: str
+    design_brief: dict | None
+    test_cases: dict
+    test_cases_version: int
+    code_approved_version: int
     existing_mrs: dict
     analysis: dict
     impact: dict
@@ -178,7 +196,11 @@ class Deps:
         sql, upstream = sql_servers(self.workspace)
         playwright = playwright_servers(self.workspace)
         return ClaudeCodeAgent(scope, routing=self.routing, mcp_servers={**playwright, **sql},
-                               sql_upstream=upstream, strict_mcp=self._strict_mcp(playwright))
+                               sql_upstream=upstream, strict_mcp=self._strict_mcp(playwright), read_roots=self._read_roots(state))
+
+    def _read_roots(self, state: dict) -> list[str]:
+        """Folders the agent may read besides its repos: this run's mockups and ticket attachments."""
+        return mockups.read_dirs(self.workspace, state["run_id"]) if state.get("run_id") else []
 
     def _strict_mcp(self, playwright: dict) -> bool:
         """An account-level Playwright server has no config to pass, so the agent has to inherit Claude Code's own."""
@@ -193,7 +215,7 @@ class Deps:
         playwright = {k: playwright_config(v, evidence_dir, profile_dir) for k, v in playwright_servers(self.workspace).items()}
         sql, upstream = sql_servers(self.workspace)
         return ClaudeCodeAgent(scope, routing=self.routing, mcp_servers={**playwright, **sql}, sql_upstream=upstream,
-                               strict_mcp=self._strict_mcp(playwright))
+                               strict_mcp=self._strict_mcp(playwright), read_roots=self._read_roots(state))
 
     def run_cmd(self, cmd: str, cwd: str, env: dict | None = None) -> subprocess.CompletedProcess:
         """`env` adds variables (e.g. DEVFLOW_WORKTREE_<REPO>) on top of the current environment."""
@@ -247,6 +269,19 @@ CROSS_REPO_DIFF = 15000  # per repo, for the contract checks that compare repos
 def _j(obj: Any) -> str:
     """Compact JSON for prompts: indentation costs tokens and tells the model nothing."""
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False, default=str)
+
+
+def _branch(state: dict) -> str:
+    """The git branch of this run: the Jira key, or the developer's own name in Freely Implement."""
+    return state.get("branch") or state["ticket_key"]
+
+
+def _subject(state: dict) -> str:
+    """Commit subject and MR title: `KEY: title` (Jira), `REF: title` or just the title (Freely Implement)."""
+    t = state["ticket"]["title"]
+    if state.get("branch"):
+        return f"{state['ref']}: {t}" if state.get("ref") else t
+    return f"{state['ticket_key']}: {t}"
 
 
 def _tail(text: str, n: int = 4000) -> str:
@@ -320,7 +355,8 @@ IMPLEMENT_STEPS = ("gather_context", "analyze_requirements", "change_impact", "d
                    "targeted_fix", "analyze_feedback_and_route", "integration_check", "repo_review", "contract_review", "summary")
 
 
-def check_environment(deps: "Deps", state: dict, need_confluence: bool, steps: tuple[str, ...] = IMPLEMENT_STEPS) -> tuple[ScopeGuard, list[str]]:
+def check_environment(deps: "Deps", state: dict, need_confluence: bool, steps: tuple[str, ...] = IMPLEMENT_STEPS,
+                      jira: bool = True) -> tuple[ScopeGuard, list[str]]:
     """Preflight shared by the workflows: tools installed, MCPs reachable, repos reachable, worktrees free, ticket
     readable. Raises PreflightFailed with every gap at once; returns the frozen scope (repo -> this run's worktree
     path) and non-blocking warnings. The main clones are only read, so they may have uncommitted work."""
@@ -335,13 +371,14 @@ def check_environment(deps: "Deps", state: dict, need_confluence: bool, steps: t
     from .. import doctor
     blocking = lambda checks: [c.detail for c in checks if c.status == "fail" and c.blocking]  # noqa: E731
     gaps += blocking(doctor.tool_checks(ws, deps.which, list(repos)))
-    gaps += blocking(doctor.mcp_checks(ws, deps.jira, deps.confluence, need_confluence))
+    if jira:
+        gaps += blocking(doctor.mcp_checks(ws, deps.jira, deps.confluence, need_confluence))
     if repos and not gaps:
         vcs = deps.source_vcs(repos)
         checks, ok_repos = doctor.vcs_checks(ws, vcs, list(repos))
         gaps += blocking(checks)
         gaps += worktrees.gaps(vcs, ws, state["ticket_key"], ok_repos)
-    if not gaps:
+    if not gaps and jira:
         try:
             status, assignee = deps.jira.status_and_assignee(state["ticket_key"])
             if status.lower() != "in progress" and need_confluence:
@@ -418,7 +455,12 @@ def release_run_worktrees(deps: Deps, state: dict) -> str:
            (f" Kept (uncommitted changes): {', '.join(res['kept'])}." if res["kept"] else "")
 
 
-def build_graph(deps: Deps, checkpointer=None):
+def build_graph(deps: Deps, checkpointer=None, free: bool = False):
+    """The ticket implement graph. `free=True` is Freely Implement: the task comes from the developer instead of Jira, the
+    branch is the developer's, the base is always develop, and the review/approve steps run before the manual test."""
+    if free:
+        base = {n: replace(r, base_branch="develop") for n, r in deps.workspace.repos.items()}
+        deps = replace(deps, workspace=replace(deps.workspace, repos=base))
     ws, store, llm = deps.workspace, deps.store, deps.llm
     g = StateGraph(State)
 
@@ -427,10 +469,10 @@ def build_graph(deps: Deps, checkpointer=None):
 
     # ------------------------------------------------------------------ Phase 0
     def preflight(state):
-        scope, warnings = check_environment(deps, state, need_confluence=True)
+        scope, warnings = check_environment(deps, state, need_confluence=not free, jira=not free)
         store.audit(state["run_id"], "preflight", {"scope": scope.to_state(), "warnings": warnings})
         return {"scope": scope.to_state(), "env_warnings": warnings, "code_version": 0,
-                "integration_version": -1, "manual_test_version": -1, "review_version": -1}
+                "integration_version": -1, "manual_test_version": -1, "review_version": -1, "code_approved_version": -1}
 
     node("preflight", preflight)
 
@@ -444,7 +486,24 @@ def build_graph(deps: Deps, checkpointer=None):
         out_dir = Path(ws.state_dir, state["run_id"], "attachments")
         return {"ticket": deps.jira.fetch_ticket(state["ticket_key"], str(out_dir))}
 
-    node("fetch_ticket", fetch_ticket, retry_policy=TRANSIENT)
+    if not free:
+        node("fetch_ticket", fetch_ticket, retry_policy=TRANSIENT)
+
+    def load_task(state):
+        """Freely Implement: the pasted description stands in for the ticket (no Jira, no Confluence)."""
+        title = task_inputs.title_of(state["task"])
+        return {"ticket": {"key": state.get("ref") or state["branch"], "title": title, "description": state["task"],
+                           "attachments": [], "images": [], "confluence_urls": []}, "context": {}}
+
+    def read_mockups(state):
+        brief = mockups.make_brief(llm, state)
+        if brief:
+            store.audit(state["run_id"], "design_brief", {"images": brief["images"], "ambiguities": len(brief["ambiguities"])})
+        return {"design_brief": brief}
+
+    if free:
+        node("load_task", load_task)
+    node("read_mockups", read_mockups, retry_policy=TRANSIENT)
 
     def gather_context(state):
         t = state["ticket"]
@@ -471,15 +530,18 @@ def build_graph(deps: Deps, checkpointer=None):
         ctx = llm.structured(SYSTEM, prompt, RequirementContext, images=t.get("images", []), step="gather_context")
         return {"context": ctx.model_dump(), "existing_mrs": mrs}
 
-    node("gather_context", gather_context, retry_policy=TRANSIENT)
+    if not free:
+        node("gather_context", gather_context, retry_policy=TRANSIENT)
 
     def _ticket_block(state, context: bool = True) -> str:
         """The ticket and, unless `context` is False, the Confluence requirement context (the largest part of it). Steps
         that already hold the analysis or the plan leave the context out."""
         t = state["ticket"]
         parts = [f"<ticket key='{t['key']}'><title>{t['title']}</title>\n<description>\n{t['description']}\n</description></ticket>"]
-        if context:
-            parts.append(f"<requirement_context>\n{_j(state.get('context', {}))}\n</requirement_context>")
+        if mockups.context_block(state):
+            parts.append(mockups.context_block(state))
+        if context and state.get("context"):
+            parts.append(f"<requirement_context>\n{_j(state['context'])}\n</requirement_context>")
         if state.get("answers"):
             parts.append("<developer_answers>\n" + "\n---\n".join(state["answers"]) + "\n</developer_answers>")
         return "\n".join(parts)
@@ -605,7 +667,8 @@ def build_graph(deps: Deps, checkpointer=None):
     g.add_edge("plan_implementation", "approve_plan")
 
     checkpoint("approve_plan", lambda s: {"plan": s["plan"], "dag": s["dag"], "validation_errors": s.get("plan_errors", []),
-                                          "risk": s["impact"]["risk"], "warnings": s.get("env_warnings", [])},
+                                          "risk": s["impact"]["risk"], "warnings": s.get("env_warnings", []),
+                                          "design_brief": s.get("design_brief"), "dev_notes": s.get("dev_notes", "")},
                ["approve", "revise", "abort"])
 
     def after_plan(state) -> str:
@@ -620,7 +683,7 @@ def build_graph(deps: Deps, checkpointer=None):
 
     # ------------------------------------------------------------------ Phase 3
     def prepare_branches(state):
-        vcs, key, run_id = deps.vcs(state), state["ticket_key"], state["run_id"]
+        vcs, key, run_id = deps.vcs(state), _branch(state), state["run_id"]
         approvals = state.get("branch_approvals", {})
         repos_state, issues = {}, []
         plan_repos = {r["repo"]: r for r in state["plan"]["repos"]}
@@ -700,11 +763,21 @@ def build_graph(deps: Deps, checkpointer=None):
         imp = state["impact"]
         if (imp["integration_required"] or imp["e2e_required"]) and state.get("integration_version") != cv:
             return "integration_check"
+        if free:  # review first, you approve the code, then you test it
+            if state.get("review_version") != cv:
+                return "repo_review"
+            if state.get("code_approved_version") != cv:
+                return "approve_code"
+            if state.get("manual_test_version") != cv:
+                return "manual_test_cases"
+            return "approve_push"
         if state.get("manual_test_version") != cv:
             return "manual_test"
         if state.get("review_version") != cv:
             return "repo_review"
         return "approve_push"
+
+    GATE_TARGETS = ["integration_check", "manual_test", "repo_review", "approve_push"] + (["approve_code", "manual_test_cases"] if free else [])
 
     def route_schedule(state):
         repos, edges = state["repos"], [tuple(e) for e in state["dag"]["edges"]]
@@ -723,18 +796,18 @@ def build_graph(deps: Deps, checkpointer=None):
     def _repo_payload(state, repo) -> dict:
         edges = [tuple(e) for e in state["dag"]["edges"]]
         return {"payload_run_id": state["run_id"], "repo": repo, "repo_state": state["repos"][repo], "scope": state["scope"],
-                "ticket_key": state["ticket_key"], "plan": state["plan"], "analysis": state["analysis"],
-                "upstream": dagmod.upstream_of(repo, edges)}
+                "ticket_key": state.get("ref") or state["ticket_key"], "plan": state["plan"], "analysis": state["analysis"],
+                "upstream": dagmod.upstream_of(repo, edges), "dev_extra": mockups.coding_block(state, ws.repo(repo).has_ui)}
 
     g.add_conditional_edges("schedule", route_schedule,
-                            ["implement_repo", "scope_request", "budget_exhausted", "integration_check", "manual_test", "repo_review", "approve_push"])
+                            ["implement_repo", "scope_request", "budget_exhausted", *GATE_TARGETS])
 
     def run_checks(repo: str, scope: dict) -> tuple[bool, list[dict]]:
         return run_repo_checks(deps, repo, scope)
 
     def implement_repo(payload):
         repo, rs = payload["repo"], dict(payload["repo_state"])
-        st = {"scope": payload["scope"]}
+        st = {"scope": payload["scope"], "run_id": payload["payload_run_id"]}
         coder, vcs, cap = deps.coder(st), deps.vcs(st), ws.max_fix_attempts
         path = payload["scope"][repo]
         changed = 0
@@ -786,6 +859,8 @@ def build_graph(deps: Deps, checkpointer=None):
                  f"<contracts_fixed_up_front>{_j(plan['contracts'])}</contracts_fixed_up_front>",
                  f"<migrations>{_j(plan['migrations'])}</migrations>",
                  f"<test_plan>{_j(plan['test_plan'])}</test_plan>"]
+        if payload.get("dev_extra"):
+            parts.append(payload["dev_extra"].rstrip())
         for u, diff in upstream.items():
             parts.append(f"<upstream_repo name='{u}' already_implemented='true'>\n{diff}\n</upstream_repo>")
         if feedback:
@@ -882,14 +957,18 @@ def build_graph(deps: Deps, checkpointer=None):
 
     node("integration_check", integration_check)
     g.add_conditional_edges("integration_check", lambda s: "analyze_feedback_and_route" if s.get("pending_feedback") else gate(s),
-                            ["analyze_feedback_and_route", "manual_test", "repo_review", "approve_push"])
+                            ["analyze_feedback_and_route", *GATE_TARGETS])
 
     # --- manual test (mandatory) -------------------------------------------------
     def manual_payload(state):
         criteria = state["analysis"]["acceptance_criteria"] + state["impact"]["manual_test_focus"]
-        return {"repos": {r: {"path": state["scope"][r], "branch": state["ticket_key"], "changed_files": rs.get("diff_files", []),
+        brief = state.get("design_brief") or {}
+        if brief.get("images"):
+            criteria = criteria + ["The UI matches the mockup(s) shown above (layout, texts, colors, spacing, states)"]
+        return {"repos": {r: {"path": state["scope"][r], "branch": _branch(state), "changed_files": rs.get("diff_files", []),
                               "run": ws.repo(r).commands.get("run", "")} for r, rs in state["repos"].items()},
-                "checklist": criteria, "integration": state.get("integration_report", {}),
+                "checklist": criteria, "integration": state.get("integration_report", {}), "mockups": brief.get("images", []),
+                "test_cases": state.get("test_cases"),
                 "hint": "Nothing is committed yet. ok = it works; feedback = describe what's wrong (name repos if you know them)."}
 
     checkpoint("manual_test", manual_payload, ["ok", "feedback", "abort"])
@@ -902,8 +981,50 @@ def build_graph(deps: Deps, checkpointer=None):
     node("manual_feedback", lambda s: {"pending_feedback": [{"source": "manual_test", "repos": s["last_answer"].get("repos", []),
                                                               "text": s["last_answer"].get("note", "")}]})
     g.add_conditional_edges("manual_test_wait", after_manual, ["manual_ok", "manual_feedback", "abort"])
-    g.add_conditional_edges("manual_ok", gate, ["integration_check", "manual_test", "repo_review", "approve_push"])
+    g.add_conditional_edges("manual_ok", gate, GATE_TARGETS)
     g.add_edge("manual_feedback", "analyze_feedback_and_route")
+
+    # --- Freely Implement: approve the code, then an ordered manual test ---------------------------------
+    if free:
+        checkpoint("approve_code", lambda s: {
+            "repos": {r: {"changed_files": rs.get("diff_files", []), "checks": rs.get("checks"), "fix_attempts_used": rs.get("fix_attempts_used")}
+                      for r, rs in s["repos"].items()},
+            "reviews": s.get("reviews", {}), "contract_review": s.get("contract_review", {}), "integration": s.get("integration_report", {}),
+            "hint": "Read the diff and the review findings. approve = test it locally next; changes = say what to change in the note "
+                    "(an agent fixes it, then the review runs again)."}, ["approve", "changes", "abort"])
+
+        def apply_code_approval(state):
+            ans = state["last_answer"]
+            if ans["choice"] == "changes":
+                return {"pending_feedback": [{"source": "developer", "repos": ans.get("repos") or [], "text": ans.get("note", "")}]}
+            return {"code_approved_version": state.get("code_version", 0)}
+
+        node("apply_code_approval", apply_code_approval)
+        g.add_conditional_edges("approve_code_wait", lambda s: "abort" if choice(s) == "abort" else "apply_code_approval",
+                                ["abort", "apply_code_approval"])
+        g.add_conditional_edges("apply_code_approval", lambda s: "analyze_feedback_and_route" if s.get("pending_feedback") else gate(s),
+                                ["analyze_feedback_and_route", *GATE_TARGETS])
+
+        def manual_test_cases(state):
+            cv = state.get("code_version", 0)
+            if state.get("test_cases") and state.get("test_cases_version") == cv:
+                return {}
+            run = {r: ws.repo(r).commands.get("run", "") for r in state["repos"]}
+            changed = {r: rs.get("diff_files", []) for r, rs in state["repos"].items()}
+            tc = llm.structured(SYSTEM, (
+                _ticket_block(state, context=False)
+                + f"\n<acceptance_criteria>{_j(state['analysis']['acceptance_criteria'])}</acceptance_criteria>\n"
+                f"<manual_test_focus>{_j(state['impact']['manual_test_focus'])}</manual_test_focus>\n"
+                f"<test_plan>{_j(state['plan']['test_plan'])}</test_plan>\n<changed_files>{_j(changed)}</changed_files>\n"
+                f"<run_commands>{_j(run)}</run_commands>\n\n"
+                "Write the manual test the developer will run on their machine, in the order to run it: only the cases that "
+                "prove the acceptance criteria and the risky parts of the change. Each case: short title, numbered steps, the "
+                "expected result, and what it covers. When there is a design brief, include a case that compares the screen "
+                "with the mockup. No more cases than necessary."), ManualTest, step="manual_test_cases")
+            return {"test_cases": tc.model_dump(), "test_cases_version": cv}
+
+        node("manual_test_cases", manual_test_cases)
+        g.add_edge("manual_test_cases", "manual_test")
 
     # --- reviews -------------------------------------------------------------
     def repo_review(state):
@@ -913,7 +1034,8 @@ def build_graph(deps: Deps, checkpointer=None):
         reviews, feedback = {}, []
         for repo in state["dag"]["nodes"]:
             diff = vcs.diff_against(repo, f"origin/{ws.repo(repo).base_branch}")
-            out = reviewer.invoke({"title": f"{state['ticket_key']} ({repo})", "description": _j(state["repos"][repo].get("tasks", [])),
+            out = reviewer.invoke({"title": f"{state['ticket_key']} ({repo})", "description": _j(state["repos"][repo].get("tasks", [])) + (
+                                       "\n" + mockups.context_block(state) if ws.repo(repo).has_ui and mockups.context_block(state) else ""),
                                    "diff": diff, "findings": []})
             reviews[repo] = {"decision": out["verdict"].decision, "summary": out["verdict"].summary,
                              "findings": [f.model_dump() for f in out["findings"]]}
@@ -940,7 +1062,7 @@ def build_graph(deps: Deps, checkpointer=None):
     node("contract_review", contract_review)
     g.add_edge("repo_review", "contract_review")
     g.add_conditional_edges("contract_review", lambda s: "analyze_feedback_and_route" if s.get("pending_feedback") else gate(s),
-                            ["analyze_feedback_and_route", "integration_check", "manual_test", "repo_review", "approve_push"])
+                            ["analyze_feedback_and_route", *GATE_TARGETS])
 
     # --- analyze_feedback_and_route --------------------------------------------
     def analyze_feedback_and_route(state):
@@ -1012,7 +1134,7 @@ def build_graph(deps: Deps, checkpointer=None):
                   for r, rs in s["repos"].items()},
         "integration": s.get("integration_report", {}), "reviews": s.get("reviews", {}), "contract_review": s.get("contract_review", {}),
         "merge_order": s["dag"]["merge_order"], "scope_gaps": s.get("scope_gaps", []),
-        "manual_test": "passed on the current code"}, ["approve", "abort"])
+        "manual_test": "passed on the current code", "jira": not free}, ["approve", "abort"])
 
     def after_push_approval(state) -> str:
         if choice(state) == "abort":
@@ -1020,12 +1142,11 @@ def build_graph(deps: Deps, checkpointer=None):
         return "commit_and_push" if gate(state) == "approve_push" else gate(state)  # never push untested code
 
     g.add_conditional_edges("approve_push_wait", after_push_approval,
-                            ["abort", "commit_and_push", "integration_check", "manual_test", "repo_review"])
+                            ["abort", "commit_and_push", *GATE_TARGETS])
 
     def commit_and_push(state):
-        vcs, key, run_id = deps.vcs(state), state["ticket_key"], state["run_id"]
+        vcs, key, run_id = deps.vcs(state), _branch(state), state["run_id"]
         trailer = f"Devflow-Run: {run_id}"
-        title = state["ticket"]["title"]
         issues, out = [], {}
         for repo in state["dag"]["merge_order"]:
             def committed():
@@ -1035,7 +1156,7 @@ def build_graph(deps: Deps, checkpointer=None):
 
             def commit():
                 vcs.git(repo, "add", "-A")
-                vcs.git(repo, "commit", "-m", f"{key}: {title}", "-m", trailer)
+                vcs.git(repo, "commit", "-m", _subject(state), "-m", trailer)
                 return vcs.head(repo)
 
             if vcs.is_dirty(repo) or committed():
@@ -1066,7 +1187,7 @@ def build_graph(deps: Deps, checkpointer=None):
     g.add_conditional_edges("push_blocked_wait", lambda s: "abort" if choice(s) == "abort" else "commit_and_push", ["abort", "commit_and_push"])
 
     def open_draft_mrs(state):
-        vcs, key, run_id = deps.vcs(state), state["ticket_key"], state["run_id"]
+        vcs, key, run_id = deps.vcs(state), _branch(state), state["run_id"]
         mrs = dict(state.get("mrs") or {})
         order = [r for r in state["dag"]["merge_order"] if state["repos"][r].get("pushed_sha")]
 
@@ -1079,7 +1200,8 @@ def build_graph(deps: Deps, checkpointer=None):
             return {"iid": items[0]["iid"], "url": items[0].get("web_url", "")} if items else None
 
         def description(repo) -> str:
-            lines = [f"Jira: {state['ticket_key']} - {state['ticket']['title']}", "", "**Merge order:** " + " → ".join(order), ""]
+            lines = [(f"Task: {state['ticket']['title']}" + (f" ({state['ref']})" if state.get("ref") else "")) if free
+                     else f"Jira: {state['ticket_key']} - {state['ticket']['title']}", "", "**Merge order:** " + " → ".join(order), ""]
             for r in order:
                 if r != repo and r in mrs:
                     lines.append(f"- Related MR in {r}: {mrs[r]['url']}")
@@ -1090,7 +1212,7 @@ def build_graph(deps: Deps, checkpointer=None):
         for repo in order:
             def create(repo=repo):
                 vcs.glab(repo, "mr", "create", "--source-branch", key, "--target-branch", ws.repo(repo).base_branch, "--draft",
-                         "--title", f"Draft: {key}: {state['ticket']['title']}", "--description", description(repo), "--yes")
+                         "--title", f"Draft: {_subject(state)}", "--description", description(repo), "--yes")
                 found = find(repo)
                 if not found:
                     raise RuntimeError(f"MR for {repo} was not found after creation")
@@ -1101,7 +1223,7 @@ def build_graph(deps: Deps, checkpointer=None):
         return {"mrs": mrs}
 
     node("open_draft_mrs", open_draft_mrs, retry_policy=TRANSIENT)
-    g.add_edge("open_draft_mrs", "jira_update")
+    g.add_edge("open_draft_mrs", "summary" if free else "jira_update")
 
     def jira_update(state):
         key, run_id = state["ticket_key"], state["run_id"]
@@ -1116,8 +1238,9 @@ def build_graph(deps: Deps, checkpointer=None):
                           detect=lambda: None, act=lambda: deps.jira.upsert_comment(key, mark, body))
         return {"jira_result": {"comment": comment["result"]}}  # the ticket's status is never changed: the developer moves it
 
-    node("jira_update", jira_update, retry_policy=TRANSIENT)
-    g.add_edge("jira_update", "summary")
+    if not free:
+        node("jira_update", jira_update, retry_policy=TRANSIENT)
+        g.add_edge("jira_update", "summary")
 
     def summary(state):
         pages = state.get("context", {}).get("pages", [])
@@ -1140,9 +1263,15 @@ def build_graph(deps: Deps, checkpointer=None):
 
     g.add_edge(START, "preflight")
     g.add_edge("preflight", "prepare_worktrees")
-    g.add_edge("prepare_worktrees", "fetch_ticket")
-    g.add_edge("fetch_ticket", "gather_context")
-    g.add_edge("gather_context", "analyze_requirements")
+    if free:
+        g.add_edge("prepare_worktrees", "load_task")
+        g.add_edge("load_task", "read_mockups")
+        g.add_edge("read_mockups", "analyze_requirements")
+    else:
+        g.add_edge("prepare_worktrees", "fetch_ticket")
+        g.add_edge("fetch_ticket", "read_mockups")
+        g.add_edge("read_mockups", "gather_context")
+        g.add_edge("gather_context", "analyze_requirements")
     g.add_edge("analyze_requirements", "change_impact")
     return g.compile(checkpointer=checkpointer)
 

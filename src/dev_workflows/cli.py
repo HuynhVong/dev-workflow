@@ -140,8 +140,30 @@ def _add_implement_commands(sub) -> None:
     si = sub.add_parser("implement", help="Jira ticket -> local multi-repo implementation -> draft MRs")
     si.add_argument("ticket")
     si.add_argument("--repos", help="hard allow-list of repos (comma separated)")
+    si.add_argument("--image", action="append", default=[], metavar="FILE", help="a mockup/reference image (repeat, up to 6)")
+    si.add_argument("--note", help="your notes for the plan and the code (they win over the ticket text)")
     common(si, run=False)
-    si.set_defaults(fn=lambda a: _session(a).start(a.ticket, _csv(a.repos)) and None)
+    si.set_defaults(fn=lambda a: _session(a).start_run(
+        "jira_ticket_implement", {"ticket": a.ticket, "repos": _csv(a.repos) or [], "images": a.image, "note": a.note or ""}) and None)
+
+    sf = sub.add_parser("free", help="a described task (no Jira) in the repos you pick, on your branch -> draft MRs")
+    sf.add_argument("--branch", required=True, help="new branch name; cut from origin/develop in every repo")
+    sf.add_argument("--repos", required=True, help="repos to work in (comma separated)")
+    sf.add_argument("--desc", help="the task description")
+    sf.add_argument("--desc-file", help="a file with the task description ('-' for stdin)")
+    sf.add_argument("--ref", help="ticket/reference number for the commit and MR title prefix")
+    sf.add_argument("--image", action="append", default=[], metavar="FILE", help="a mockup/reference image (repeat, up to 6)")
+    sf.add_argument("--note", help="notes on the images or the task")
+    common(sf, run=False)
+
+    def do_free(a):
+        from .jira_implement.free_implement import WORKFLOW as FREE
+        text = a.desc or (_read(a.desc_file) if a.desc_file else "")
+        if not text.strip():
+            raise SystemExit("give the task with --desc or --desc-file")
+        _session(a).start_run(FREE, {"description": text, "branch": a.branch, "repos": _csv(a.repos) or [], "ref": a.ref or "",
+                                     "images": a.image, "note": a.note or ""})
+    sf.set_defaults(fn=do_free)
 
     st = sub.add_parser("review", help="Jira ticket + its commits -> code review, approved E2E tests with proof, Jira comment")
     st.add_argument("ticket")

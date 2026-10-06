@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, type FormField } from "@/lib/api";
 import { cn } from "@/lib/format";
 import { useMeta, useWorkflows } from "@/lib/hooks";
+import { ImagesField } from "./ImagesField";
 import { Button, ErrorNote, Input, Label, Modal, Pill, Select, Spinner, Textarea } from "./ui";
 
 export function StartRunModal({ open, initialWorkflow, onClose, onStarted }: {
@@ -110,14 +111,14 @@ export function StartRunModal({ open, initialWorkflow, onClose, onStarted }: {
           <p className="text-xs text-muted-foreground">This form was generated from the graph's input schema. Leave fields the graph fills itself empty.</p>
         ) : null}
         {fields.map((f) => (
-          <Field key={f.name} field={f} value={values[f.name]} onChange={(v) => setValues({ ...values, [f.name]: v })} repos={meta?.repos ?? []} />
+          <Field key={f.name} field={f} value={values[f.name]} onChange={(v) => setValues((cur) => ({ ...cur, [f.name]: v }))} repos={meta?.repos ?? []} />
         ))}
         {wf && !wf.generated_form && wf.kind === "graph" ? (
           <div>
             <Label htmlFor="label" hint="(optional)">
               Run title
             </Label>
-            <Input id="label" value={(values._label as string) ?? ""} onChange={(e) => setValues({ ...values, _label: e.target.value })} placeholder="Shown in the runs list" />
+            <Input id="label" value={(values._label as string) ?? ""} onChange={(e) => setValues((cur) => ({ ...cur, _label: e.target.value }))} placeholder="Shown in the runs list" />
           </div>
         ) : null}
         {wf?.kind === "ticket" ? <Preflight loading={preflight.isFetching} checks={preflight.data?.checks} error={preflight.error} /> : null}
@@ -225,6 +226,15 @@ function Field({ field: f, value, onChange, repos }: { field: FormField; value: 
       </div>
     );
   }
+  if (f.type === "images") {
+    return (
+      <div>
+        {label}
+        <ImagesField value={(value as string[] | undefined) ?? []} onChange={onChange} />
+        {help}
+      </div>
+    );
+  }
   if (f.type === "bool") {
     return (
       <label className="flex items-center gap-2 text-sm">
@@ -255,7 +265,7 @@ function Field({ field: f, value, onChange, repos }: { field: FormField; value: 
         <Textarea
           id={id}
           value={text}
-          rows={f.name === "diff" || f.name === "template" ? 8 : 3}
+          rows={f.rows ?? (f.name === "diff" || f.name === "template" ? 8 : 3)}
           className={cn((f.type === "json" || (f as any).mono) && "font-mono text-xs")}
           placeholder={f.placeholder ?? (f.type === "list" ? "One item per line" : f.type === "json" ? "{ }" : "")}
           onChange={(e) => onChange(f.type === "list" ? e.target.value.split("\n") : e.target.value)}
@@ -272,7 +282,7 @@ function Field({ field: f, value, onChange, repos }: { field: FormField; value: 
         type={f.type === "number" ? "number" : f.type === "date" ? "date" : "text"}
         value={(value as string) ?? ""}
         placeholder={f.placeholder}
-        className={cn(f.type === "ticket" && "font-mono uppercase")}
+        className={cn(f.type === "ticket" && "font-mono uppercase", f.mono && "font-mono")}
         autoFocus={f.type === "ticket"}
         onChange={(e) => onChange(f.type === "ticket" ? e.target.value.toUpperCase() : e.target.value)}
       />
