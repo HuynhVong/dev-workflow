@@ -19,7 +19,7 @@ from ..routing import Routing
 from .confluence import ConfluenceReader
 from .address_review import WORKFLOW as REVIEW_WORKFLOW
 from .address_review import build_review_graph
-from . import worktrees
+from . import task_inputs, worktrees
 from .graph import WORKFLOW, Deps, PreflightFailed, build_graph
 from .jira import JiraGateway
 from .ledger import Store
@@ -112,6 +112,8 @@ class Session:
         """Register a new PENDING run of any workflow (nothing runs yet). Returns (run_id, graph inputs)."""
         spec = self.registry.get(workflow)
         stamp = time.strftime("%Y%m%d-%H%M%S")
+        if spec.kind == "ticket" and spec.ui.get("free"):
+            return self._create_free(workflow, values, stamp)
         if spec.kind == "ticket":
             ticket = str(values.get("ticket") or "").strip().upper()
             if not TICKET_KEY.match(ticket):
@@ -126,6 +128,8 @@ class Session:
             kind = "review" if workflow == REVIEW_WORKFLOW else spec.ui.get("run_prefix", "")
             run_id = f"{ticket}-{kind + '-' if kind else ''}{stamp}"
             inputs = {"run_id": run_id, "ticket_key": ticket, "requested_repos": repos, **extra}
+            if spec.ui.get("dev_inputs"):  # mockup images and notes the developer attached to the start form
+                inputs.update(task_inputs.collect(self.ws, run_id, values))
             self.store.create_run(run_id, workflow, ticket, label=ticket, inputs=inputs)
         else:
             prepare = spec.ui.get("prepare")
@@ -135,6 +139,30 @@ class Session:
                 inputs = {"run_id": run_id, **inputs}
             self.store.create_run(run_id, workflow, "", label=label, inputs=inputs)
         self.store.audit(run_id, "created", {"workflow": workflow, "values": _short(values)})
+        return run_id, inputs
+
+    def _create_free(self, workflow: str, values: dict, stamp: str) -> tuple[str, dict]:
+        """Freely Implement: a run for a task the developer describes, on a branch they name, without Jira."""
+        task = str(values.get("description") or "").strip()
+        if not task:
+            raise ValueError("describe what to implement")
+        branch = task_inputs.validate_branch(values.get("branch"), self.ws.branch_prefix)
+        repos = [r for r in dict.fromkeys(values.get("repos") or []) if r]
+        if not repos:
+            raise ValueError("choose at least one repo to work in")
+        unknown = [r for r in repos if r not in self.ws.repos]
+        if unknown:
+            raise ValueError(f"repos not in workspace.yaml: {unknown}")
+        key = task_inputs.slug(branch)  # the worktree folder and the one-active-run-per-key lock
+        busy = self.store.active_runs(key)
+        if busy:
+            raise RunConflict(f"branch {branch} already has an unfinished run {busy[0]['run_id']} ({busy[0]['status']}). Finish, "
+                              f"resume or abort it first.")
+        run_id = f"{key}-free-{stamp}"
+        inputs = {"run_id": run_id, "ticket_key": key, "branch": branch, "ref": str(values.get("ref") or "").strip(), "task": task,
+                  "requested_repos": repos, **task_inputs.collect(self.ws, run_id, values)}
+        self.store.create_run(run_id, workflow, key, label=task_inputs.title_of(task), inputs=inputs)
+        self.store.audit(run_id, "created", {"workflow": workflow, "values": _short({k: v for k, v in values.items() if k != "images"})})
         return run_id, inputs
 
     def start(self, ticket: str, repos: list[str] | None, workflow: str = WORKFLOW) -> str:

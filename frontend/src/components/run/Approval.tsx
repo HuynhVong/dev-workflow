@@ -8,7 +8,7 @@ import { cn, humanize } from "@/lib/format";
 import { JsonTree } from "../JsonTree";
 import { Button, ErrorNote, IconSquare, Label, Mono, Modal, Pill, Spinner, Textarea } from "../ui";
 import { ConfirmTicketsForm, ReportForm } from "./StandupForms";
-import { CheckoutForm, CommentForm, HumanStepForm, ResultsForm, TestPlanForm } from "./TicketReviewForms";
+import { CheckoutForm, CommentForm, HumanStepForm, ResultsForm, Shots, TestPlanForm } from "./TicketReviewForms";
 
 type Answer = Record<string, unknown> & { choice?: string };
 
@@ -151,6 +151,7 @@ const LABELS: Record<string, Record<string, string>> = {
   _: { approve: "Approve & continue", ok: "It works", feedback: "Report problem, fix it now", revise: "Revise", proceed: "Proceed without answers", deny: "Deny", retry: "Retry", reuse: "Reuse branches", fixed_by_hand: "Fixed by hand, re-run checks", answer: "Answer", fix: "Fix", skip: "Skip", edit: "Apply my triage" },
   clarify: { answer: "Send answers" },
   approve_push: { approve: "Approve push" },
+  approve_code: { approve: "Approve code, go test it", changes: "Request changes" },
   route_ask: { answer: "Answer", fix: "Fix in repos", skip: "Skip these items" },
   triage: { approve: "Approve proposed actions" },
   checkout_gate: { ready: "Checked out, verify" },
@@ -165,6 +166,7 @@ const LABELS: Record<string, Record<string, string>> = {
 const NOTE_HINT: Record<string, string> = {
   approve_plan: "(required to revise)",
   manual_test: "(required for feedback)",
+  approve_code: "(required to request changes)",
   manual_retest: "(required for feedback)",
   route_ask: "(the answer, or the fix instructions)",
   triage: "(extra instructions for every fix)",
@@ -180,6 +182,7 @@ const BLOCKED: Record<string, (o: string, p: Record<string, any>, note: string, 
   manual_test: (o, _p, note, extra) => (o === "feedback" && !note.trim() && !hasBug(extra) ? "Describe at least one bug (or write a decision note)" : null),
   manual_retest: (o, _p, note, extra) => (o === "feedback" && !note.trim() && !hasBug(extra) ? "Describe at least one bug (or write a decision note)" : null),
   human_step: (o, _p, note) => (o === "fail" && !note.trim() ? "Say what failed in the note" : null),
+  approve_code: (o, _p, note) => (o === "changes" && !note.trim() ? "Say what to change in the note" : null),
   route_ask: (o, _p, note, extra) => (o === "answer" && !note.trim() ? "Write the answer in the note" : o === "fix" && !(extra.repos as string[] | undefined)?.length ? "Pick the repos to fix" : null),
   triage: (o, _p, _note, extra) => (o === "approve" && extra._edited ? "You changed some actions: use Apply my triage" : o === "edit" && !extra._edited ? "Change an action in the table first" : null),
   clarify: (o, _p, note, extra) => (o === "answer" && !note.trim() && !(extra.note as string) ? "Answer at least one question" : null),
@@ -196,7 +199,8 @@ type FormProps = { p: Record<string, any>; run: RunDetail; extra: Answer; setExt
 
 const FORMS: Record<string, (f: FormProps) => ReactNode> = {
   clarify: ({ p, extra, setExtra }) => <ClarifyForm p={p} extra={extra} setExtra={setExtra} />,
-  approve_plan: ({ p }) => <PlanView p={p} />,
+  approve_plan: ({ p, run }) => <PlanView p={p} run={run} />,
+  approve_code: ({ p }) => <CodeView p={p} />,
   branch_ownership: ({ p }) => (
     <Section title="Branches that already exist">
       <IssueList items={p.issues} />
@@ -341,11 +345,86 @@ function ClarifyForm({ p, extra, setExtra }: { p: Record<string, any>; extra: An
   );
 }
 
-function PlanView({ p }: { p: Record<string, any> }) {
+function MockupBrief({ p, run }: { p: Record<string, any>; run: RunDetail }) {
+  const b = p.design_brief;
+  if (!b && !p.dev_notes) return null;
+  const list = (title: string, items?: string[]) => (items?.length ? (
+    <div>
+      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{title}</div>
+      <ul className="list-disc pl-5 text-xs">{items.map((x, i) => <li key={i}>{x}</li>)}</ul>
+    </div>
+  ) : null);
+  return (
+    <Section title="Your mockups and notes, as the steps read them">
+      <div className="space-y-2 rounded-lg border border-border bg-surface px-3 py-2" data-testid="design-brief">
+        <Shots runId={run.run_id} paths={b?.images} />
+        {p.dev_notes ? <p className="whitespace-pre-wrap text-xs"><span className="text-muted-foreground">Your notes: </span>{p.dev_notes}</p> : null}
+        {b ? (
+          <>
+            <p className="text-xs">{b.summary}</p>
+            {list("Screens", b.screens)}
+            {list("Visible text", b.texts)}
+            {list("Styling", b.styling)}
+            {list("Interactions", b.interactions)}
+            {b.ambiguities?.length ? <div className="text-xs text-warning">Not settled by the mockups: {b.ambiguities.join("; ")}</div> : null}
+          </>
+        ) : null}
+      </div>
+    </Section>
+  );
+}
+
+function CodeView({ p }: { p: Record<string, any> }) {
+  const reviews = Object.entries(p.reviews ?? {}) as [string, any][];
+  return (
+    <>
+      <Section title="Open the Diff tab to read the changes, then decide">
+        <div className="space-y-2">
+          {Object.entries(p.repos ?? {}).map(([name, r]: [string, any]) => (
+            <div key={name} className="rounded-lg border border-border bg-surface px-3 py-2" data-testid={`code-repo-${name}`}>
+              <div className="flex flex-wrap items-center gap-2">
+                <Mono className="text-foreground">{name}</Mono>
+                <span className="text-xs text-muted-foreground">{(r.changed_files ?? []).length} files changed</span>
+                <span className="text-xs text-muted-foreground">fix attempts {r.fix_attempts_used ?? 0}/3</span>
+              </div>
+              {r.changed_files?.length ? <div className="mt-1 font-mono text-[11px] text-muted-foreground">{r.changed_files.join("  ")}</div> : null}
+              {r.checks ? <ChecksView checks={r.checks} /> : null}
+            </div>
+          ))}
+        </div>
+      </Section>
+      {reviews.length ? (
+        <Section title="Code review">
+          <div className="space-y-2">
+            {reviews.map(([repo, rv]) => (
+              <div key={repo} className="rounded-lg border border-border bg-surface px-3 py-2 text-xs">
+                <div className="flex items-center gap-2">
+                  <Mono className="text-foreground">{repo}</Mono>
+                  <Pill tone={rv.decision === "approve" ? "success" : rv.decision === "comment" ? "warning" : "destructive"}>{humanize(rv.decision ?? "")}</Pill>
+                  <span className="text-muted-foreground">{(rv.findings ?? []).length} findings</span>
+                </div>
+                {rv.summary ? <p className="mt-1 text-muted-foreground">{rv.summary}</p> : null}
+                {(rv.findings ?? []).slice(0, 8).map((f: any, i: number) => (
+                  <div key={i} className="mt-1"><Pill tone={f.severity === "blocker" || f.severity === "major" ? "destructive" : "muted"}>{f.severity}</Pill> <Mono>{f.file}{f.line ? `:${f.line}` : ""}</Mono> {f.title}</div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </Section>
+      ) : null}
+      {p.contract_review?.blockers?.length ? (
+        <Section title="Cross-repo blockers"><IssueList items={p.contract_review.blockers} /></Section>
+      ) : null}
+    </>
+  );
+}
+
+function PlanView({ p, run }: { p: Record<string, any>; run: RunDetail }) {
   const plan = p.plan ?? {};
   const dag = p.dag ?? {};
   return (
     <>
+      <MockupBrief p={p} run={run} />
       {p.validation_errors?.length ? (
         <div className="rounded-lg border border-destructive/40 bg-destructive-soft px-3 py-2 text-xs text-destructive">
           <div className="font-medium">The plan can't be approved yet</div>
@@ -578,6 +657,25 @@ function ManualTest({ p, run, extra, setExtra }: FormProps) {
           ))}
         </div>
       </Section>
+      {p.mockups?.length ? (
+        <Section title="Compare with the mockup(s)">
+          <Shots runId={run.run_id} paths={p.mockups} />
+        </Section>
+      ) : null}
+      {p.test_cases?.cases?.length ? (
+        <Section title="Test cases, in the order to run them">
+          <ol className="space-y-2" data-testid="test-cases">
+            {p.test_cases.cases.map((c: any, i: number) => (
+              <li key={i} className="rounded-lg border border-border bg-surface px-3 py-2 text-xs">
+                <div className="font-medium text-foreground">{i + 1}. {c.title}</div>
+                <ol className="mt-1 list-decimal pl-5">{(c.steps ?? []).map((st: string, j: number) => <li key={j}>{st}</li>)}</ol>
+                <div className="mt-1"><span className="text-muted-foreground">Expect: </span>{c.expected}</div>
+                {c.covers ? <div className="text-muted-foreground">Covers: {c.covers}</div> : null}
+              </li>
+            ))}
+          </ol>
+        </Section>
+      ) : null}
       {p.checklist?.length ? (
         <Section title="What to test">
           <ul className="space-y-1">
@@ -621,7 +719,7 @@ function PushView({ p }: { p: Record<string, any> }) {
             Commit and push each repo's branch (never forced), in this order: <Mono className="text-foreground">{(p.merge_order ?? []).join(" → ")}</Mono>
           </li>
           <li>Open a draft MR per repo targeting develop (never merged by devflow)</li>
-          <li>Add one delivery comment to the Jira ticket (devflow never changes its status: you move it)</li>
+          {p.jira === false ? null : <li>Add one delivery comment to the Jira ticket (devflow never changes its status: you move it)</li>}
           <li>Manual test: {p.manual_test}</li>
         </ul>
       </Section>

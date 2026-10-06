@@ -156,6 +156,49 @@ test("approvals filter, tokens, worktrees, settings and connections pages render
   await expect(page.locator("aside").getByLabel("Settings")).toBeInViewport(); // the button at the sidebar's foot
 });
 
+test("freely implement: paste a mockup, pick repos and a branch, approve the plan, the code, the test and the push", async ({ page }) => {
+  await open(page);
+  await page.getByTestId("new-run").click();
+  await page.getByTestId("workflow-select").selectOption("free_implement");
+  await page.getByLabel("What to implement").fill("Export orders as CSV\nWith the active filters.");
+  // an image pasted from the clipboard lands in the images field
+  await page.evaluate(() => {
+    const bytes = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0));
+    const data = new DataTransfer();
+    data.items.add(new File([bytes], "mockup.png", { type: "image/png" }));
+    window.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+  });
+  await expect(page.getByTestId("images-field").getByRole("img", { name: "mockup.png" })).toBeVisible();
+  await page.getByLabel("Notes").fill("The button must be blue");
+  await page.getByLabel("Branch name").fill("feature/export-e2e");
+  await page.getByLabel("Ticket / reference number").fill("AQS-77");
+  await page.getByTestId("repos-picker").getByText("api").click();
+  await page.getByTestId("repos-picker").getByText("web").click();
+  await expect(page.getByTestId("preflight")).toContainText("checks OK");
+  await page.getByTestId("start-run").click();
+
+  await expect(panel(page, "approve_plan")).toBeVisible();
+  await expect(page.getByTestId("design-brief")).toContainText("The button must be blue");
+  await expect(page.getByTestId("design-brief").getByRole("img")).toBeVisible();
+  await page.getByTestId("choice-approve").click();
+
+  // review first, then you approve the code (and can ask for changes)
+  await expect(panel(page, "approve_code")).toBeVisible();
+  await expect(page.getByTestId("code-repo-api")).toContainText("feature.txt");
+  await expect(page.getByTestId("choice-changes")).toBeDisabled();
+  await page.getByTestId("choice-approve").click();
+
+  await expect(panel(page, "manual_test")).toBeVisible();
+  await expect(page.getByTestId("test-cases")).toContainText("Export respects filters");
+  await expect(page.getByTestId("manual-repo-api")).toContainText("feature/export-e2e");
+  await page.getByTestId("choice-ok").click();
+
+  await expect(panel(page, "approve_push")).toBeVisible();
+  await expect(panel(page, "approve_push")).not.toContainText("Jira ticket to Code Review");
+  await page.getByTestId("choice-approve").click();
+  await expect(page.getByTestId("run-detail").getByText("Completed", { exact: true })).toBeVisible();
+});
+
 test("a ticket review: checkout, approved test plan, a step that needs you, proof, and the Jira comment", async ({ page }) => {
   const sha = readFileSync(join(process.env.DEVFLOW_E2E_DIR!, "review-commit.txt"), "utf8").trim();
   await open(page);

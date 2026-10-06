@@ -60,6 +60,7 @@ class Workspace:
     vcs_prefix: str = "rtk"
     state_dir: str = ".devflow"
     max_fix_attempts: int = 3
+    branch_prefix: str = ""  # Freely Implement: branch names must start with this (e.g. "feature/"); blank = any name
     worktree_root: str = "~/devflow-worktrees"  # each run works in <worktree_root>/<TICKET>/<repo>
     max_parallel_runs: int = 3                  # the UI's run manager queues the rest
     prices: dict = field(default_factory=dict)  # USD per million tokens per model, for cost estimates
@@ -117,6 +118,7 @@ def load_workspace(path: str | Path) -> Workspace:
         vcs_prefix=raw.get("vcs_prefix", "rtk"),
         state_dir=str(state_dir),
         max_fix_attempts=int(raw.get("max_fix_attempts", 3)),
+        branch_prefix=str(raw.get("branch_prefix") or ""),
         worktree_root=str(worktree_root),
         max_parallel_runs=int(raw.get("max_parallel_runs", 3)),
         prices=dict(raw.get("prices") or {}),

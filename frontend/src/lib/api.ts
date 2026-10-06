@@ -41,6 +41,8 @@ export interface FormField {
   help?: string;
   options?: string[];
   default?: unknown;
+  rows?: number;
+  mono?: boolean;
 }
 
 export interface Workflow {
@@ -238,6 +240,7 @@ export const api = {
   refreshWorkflows: () => call<{ workflows: Workflow[]; errors: string[] }>("POST", "/api/workflows/refresh"),
   runs: () => call<{ runs: Run[]; slots: Slots }>("GET", "/api/runs"),
   run: (id: string) => call<RunDetail>("GET", `/api/runs/${encodeURIComponent(id)}`),
+  uploadImage: (name: string, data: string) => call<{ id: string; name: string; size: number }>("POST", "/api/uploads", { name, data }),
   startRun: (workflow: string, values: Record<string, unknown>) =>
     call<{ run_id: string; queued: boolean }>("POST", "/api/runs", { workflow, values }),
   answer: (id: string, body: Record<string, unknown>) => call<{ ok: boolean }>("POST", `/api/runs/${encodeURIComponent(id)}/answer`, body),

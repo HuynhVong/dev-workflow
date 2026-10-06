@@ -12,7 +12,7 @@ from dev_workflows.jira_implement.graph import Deps
 from dev_workflows.jira_implement.jira import JiraGateway
 from dev_workflows.jira_implement.ledger import Store
 from dev_workflows.jira_implement.models import (Analysis, ContractCheck, ContractReview, DagEdge, FeedbackAnalysis, Impact,
-                                                 Outdated, Plan, RepoTasks, RequirementContext, Risk, TestPlanItem)
+                                                 Outdated, Plan, RepoTasks, RequirementContext, Risk, TestPlanItem, DesignBrief, ManualCase, ManualTest)
 from dev_workflows.jira_implement.workspace import load_workspace
 from dev_workflows.routing import Routing, SkillRegistry
 from dev_workflows.workflows.pr_review import LensReview, Triage, Verdict
@@ -167,6 +167,11 @@ class FakeLLM:
             Triage: [Triage(summary="s", touches_frontend=False, risk="low", lenses=[])],
             LensReview: [LensReview(findings=[])],
             Verdict: [Verdict(decision="approve", summary="ok")],
+            DesignBrief: [DesignBrief(summary="Orders page with an Export button", screens=["Orders table, Export button top right"],
+                                      components=["primary button"], texts=["Export CSV"], styling=["blue primary button"],
+                                      interactions=["click downloads the CSV"], ambiguities=[])],
+            ManualTest: [ManualTest(cases=[ManualCase(title="Export respects filters", steps=["Open Orders", "Filter by status", "Click Export CSV"],
+                                                      expected="The CSV has only the filtered rows", covers="CSV respects filters")])],
         }
         for k, v in (overrides or {}).items():
             self.answers[k] = list(v)

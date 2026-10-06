@@ -410,13 +410,14 @@ def run(ws, deps=None, repos: list[str] | None = None, which: Callable = shutil.
     gateways and fakes in tests; without it the gateways come from workspace.yaml or Claude Code. `workflow` =
     "ticket_review" checks only what that workflow needs: no glab, no worktrees, Confluence optional, Playwright MCP."""
     review = workflow == "ticket_review"
+    free = workflow == "free_implement"  # no Jira and no Confluence: only tools, repos, worktrees and AI
     from .jira_implement import worktrees
     repos = list(repos if repos is not None else ws.repos)
     jira = confluence = None
     source = ""
     if deps is not None:
         jira, confluence, which, vcs_runner = deps.jira, deps.confluence, deps.which, deps.vcs_runner
-    else:
+    elif not free:
         from .jira_implement.confluence import ConfluenceReader
         from .jira_implement.mcp_config import confluence_mcp_for
         jira, source = jira_gateway(ws)
@@ -425,10 +426,11 @@ def run(ws, deps=None, repos: list[str] | None = None, which: Callable = shutil.
     checks = ai_checks() + tool_checks(ws, which, repos)
     if deps is None:
         checks += claude_code_mcp_checks(ws) + sql_checks(ws)
-    checks += mcp_checks(ws, jira, confluence, need_confluence=not review)
-    checks += direct_route_checks(getattr(jira, "mcp", None), "Jira MCP")
-    checks += direct_route_checks(getattr(confluence, "_mcp", None), "Confluence MCP")
-    checks += [c for c in jira_access_checks(ws, jira, source) if c.id != "mcp.jira.setup"]
+    if not free:
+        checks += mcp_checks(ws, jira, confluence, need_confluence=not review)
+        checks += direct_route_checks(getattr(jira, "mcp", None), "Jira MCP")
+        checks += direct_route_checks(getattr(confluence, "_mcp", None), "Confluence MCP")
+        checks += [c for c in jira_access_checks(ws, jira, source) if c.id != "mcp.jira.setup"]
     if review and not any(c.id == "mcp.playwright" for c in checks):
         has = has_playwright(ws)
         checks.append(_ok("mcp.playwright", "Playwright MCP", "Playwright MCP configured") if has else

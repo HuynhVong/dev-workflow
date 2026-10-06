@@ -222,6 +222,36 @@ or switches it, so it can have work in progress. Every ticket works in its own w
   worktrees the same way and keeps any with uncommitted changes. Preflight prunes stale git worktree entries and
   deletes an empty leftover folder at the worktree path; a non-empty foreign folder still has to be moved by hand.
 
+#### Mockups and notes for a Jira run
+
+Give a run what the ticket cannot say: `devflow implement AQS-5512 --image mockup.png --image states.png --note "Match the
+mockup; the table keeps its current columns"` (or the Mockups / images and Notes fields of the UI's start form: drag,
+browse or paste with Ctrl+V; up to 6 images of at most 5 MB). The images and the ticket's own image attachments are read
+**once** into a written Design Brief (screens, components, exact texts, styling, interactions, what is unclear). The plan,
+the analysis and every coding agent get the brief, not the pictures; the agent of a repo with `has_ui: true` can also open the
+mockup files itself. Your notes win over the ticket text where they disagree, the manual-test checklist gets a "matches the
+mockup" line, and the plan approval shows the images and the brief. With no images and no notes nothing extra runs.
+
+### Freely implement (no Jira)
+
+A task you describe yourself, in the repos you pick, on a branch you name:
+
+```bash
+devflow free --branch feature/export-orders --repos api-service,web-portal --desc-file task.md \
+  --image mockup.png --note "buttons are blue" --ref AQS-123
+```
+
+In the UI choose **Freely implement**: paste the description, add mockups and notes, name the branch, optionally a ticket /
+reference number (only a prefix of the commit message and MR title), and tick the repos (at least one; they are a hard
+allow-list). The flow: preflight (no Jira or Confluence) → a worktree per repo → mockups read into the brief → analysis
+(asks only what blocks the plan) → repo discovery → **plan you approve** → branch cut from a fresh `origin/develop` (develop is
+always the base here) → Claude Code implements wave by wave with the repo's checks → code review → **you approve the code**
+(or ask for changes, which are fixed and re-reviewed) → an ordered list of **manual test cases** you run locally →
+**you approve the push** → commit, push (never forced) and a draft MR per repo targeting `develop`. Nothing is written to Jira.
+
+Branch names cannot be `develop`, `main`, `master` or `release/*`, `hotfix/*`; set `branch_prefix: feature/` in
+`workspace.yaml` to require a prefix. One unfinished run per branch; the worktree folder is the branch name with `/` turned into `-`.
+
 ### Ticket review
 
 ```bash
