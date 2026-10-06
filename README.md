@@ -19,7 +19,9 @@ Jira and Confluence. Run them from the `devflow` CLI or the local web app (`devf
 - **Confluence MCP**. Read access is enough: every workflow treats Confluence as strictly read-only and never exposes
   its write tools.
 - **Playwright MCP**, for repos with a UI and for the ticket review.
-- `git` and/or `glab` installed and authenticated.
+- `git` and/or `glab` installed and authenticated. For a self-hosted GitLab, log glab in to that host:
+  `glab auth login --hostname gitlab.yourcompany.com` (a personal access token with `api`, `read_repository`,
+  `write_repository`). `devflow doctor` checks the login only for the hosts your repos' `origin` remotes use.
 - `rtk` installed. Every git and glab command devflow runs carries the `rtk` prefix
   (`rtk git ...`, `rtk glab ...`); bare git/glab is never called.
 - The Claude Code CLI, with the global role skills for your stack installed at first-time setup (see below).
