@@ -407,6 +407,41 @@ def route_feedback(fa: FeedbackAnalysis, scope: dict, repos: dict, edges: list[t
     return fixes, ask, scope_reqs
 
 
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+
+
+def manual_feedback_items(answer: dict, state_dir: str, run_id: str) -> list[dict]:
+    """The developer's manual-test report as feedback items, one per bug: {source, repos, text, images}. A bug is
+    {description, expected, images[]}; images are paths the UI saved under <state_dir>/<run_id>/feedback/ (anything
+    else is dropped). A plain note (older clients, the CLI) becomes one item."""
+    root = Path(state_dir, run_id, "feedback").resolve()
+    repos = answer.get("repos", [])
+    items = []
+    for n, bug in enumerate([b for b in (answer.get("bugs") or []) if isinstance(b, dict)], 1):
+        desc, expected = str(bug.get("description", "")).strip(), str(bug.get("expected", "")).strip()
+        images = []
+        for im in bug.get("images") or []:
+            path = (Path(state_dir, run_id) / str(im)).resolve()
+            if path.is_relative_to(root) and path.is_file() and path.suffix.lower() in IMAGE_EXTS:
+                images.append(str(path))
+        if not (desc or expected or images):
+            continue
+        text = f"Bug {n}: {desc or '(no description; see the screenshot)'}" + (f"\nExpected: {expected}" if expected else "")
+        items.append({"source": "manual_test", "repos": repos, "text": text, "images": images})
+    note = str(answer.get("note", "")).strip()
+    if note:
+        items.append({"source": "manual_test", "repos": repos, "text": note})
+    return items
+
+
+def feedback_images(items: list[dict]) -> list[str]:
+    return [im for it in items for im in it.get("images") or []]
+
+
+SCREENSHOT_HINT = ("Some items have screenshots (attached in item order). Describe in each item's fix_instructions what the "
+                   "screenshot shows that matters for the fix, because the coding agent cannot see the images.")
+
+
 def release_run_worktrees(deps: Deps, state: dict) -> str:
     """A run ended (completed or aborted): drop the ticket's clean worktrees and say so. Dirty ones are kept."""
     try:
@@ -899,8 +934,7 @@ def build_graph(deps: Deps, checkpointer=None):
         return {"ok": "manual_ok", "feedback": "manual_feedback", "abort": "abort"}[c]
 
     node("manual_ok", lambda s: {"manual_test_version": s.get("code_version", 0)})
-    node("manual_feedback", lambda s: {"pending_feedback": [{"source": "manual_test", "repos": s["last_answer"].get("repos", []),
-                                                              "text": s["last_answer"].get("note", "")}]})
+    node("manual_feedback", lambda s: {"pending_feedback": manual_feedback_items(s["last_answer"], ws.state_dir, s["run_id"])})
     g.add_conditional_edges("manual_test_wait", after_manual, ["manual_ok", "manual_feedback", "abort"])
     g.add_conditional_edges("manual_ok", gate, ["integration_check", "manual_test", "repo_review", "approve_push"])
     g.add_edge("manual_feedback", "analyze_feedback_and_route")
@@ -953,7 +987,9 @@ def build_graph(deps: Deps, checkpointer=None):
             f"<repo_status>{_j(status)}</repo_status>\n<feedback>{_j(items_in)}</feedback>\n\n"
             "Classify each feedback item. Decide which repos must change, the cause and your confidence. Use requirement_gap "
             "when the requirement itself is unclear or missing, scope_issue when a repo outside repos_in_scope must change, "
-            "and unclear when the evidence does not point to a cause."), FeedbackAnalysis, step="analyze_feedback_and_route")
+            "and unclear when the evidence does not point to a cause."
+            + (f"\n{SCREENSHOT_HINT}" if feedback_images(items_in) else "")),
+            FeedbackAnalysis, images=feedback_images(items_in), step="analyze_feedback_and_route")
         fixes, ask, scope_reqs = route_feedback(fa, state["scope"], repos, [tuple(e) for e in state["dag"]["edges"]], ws.max_fix_attempts)
         if not fa.items:
             ask = [{"source": "analyzer", "category": "unclear", "cause": "no actionable item found", "repos": [], "feedback": items_in, "why_asking": "unclear"}]

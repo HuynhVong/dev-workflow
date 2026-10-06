@@ -4,6 +4,8 @@ Local only: bound to 127.0.0.1, a random token in the launch URL becomes a cooki
 DNS rebinding, and there is no CORS. Secrets never reach the browser (workspace.yaml values are masked).
 """
 import asyncio
+import base64
+import binascii
 import json
 import os
 import secrets
@@ -24,7 +26,7 @@ from .manager import RunManager
 STATIC = Path(__file__).parent / "static"
 ACTIVE = ("PENDING", "RUNNING", "WAITING_HUMAN", "FAILED")
 ANSWER_KEYS = ("choice", "note", "repos", "approve_repos", "fix", "answer", "skip", "value",
-               "app_url", "run", "cases", "retest", "comment")  # the last five: ticket review checkpoints
+               "app_url", "run", "cases", "retest", "comment", "bugs")  # the last five: ticket review checkpoints
 
 
 class App:
@@ -315,6 +317,27 @@ def create_app(state: App) -> FastAPI:
         if not target.is_relative_to(root) or not target.is_file():
             raise HTTPException(404, {"error": "not_found", "detail": "no such file in this run's folder"})
         return FileResponse(target)
+
+    @api.post("/api/runs/{run_id}/feedback-images")
+    def feedback_image(run_id: str, body: dict = Body(...)):
+        """A screenshot attached to a manual-test bug: {name, data (base64)}. Saved under the run's folder; the returned
+        path is what the bug's `images` list carries (and what /file serves back)."""
+        session, _ = state.need()
+        _run_or_404(session, run_id)
+        ext = Path(str(body.get("name", ""))).suffix.lower()
+        if ext not in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
+            raise HTTPException(400, {"error": "invalid", "detail": "attach a png, jpg, gif or webp image"})
+        try:
+            raw = base64.b64decode(str(body.get("data", "")), validate=True)
+        except (binascii.Error, ValueError) as e:
+            raise HTTPException(400, {"error": "invalid", "detail": "the image data is not valid base64"}) from e
+        if not raw or len(raw) > 10_000_000:
+            raise HTTPException(400, {"error": "invalid", "detail": "an image must be between 1 byte and 10 MB"})
+        folder = Path(session.ws.state_dir, run_id, "feedback")
+        folder.mkdir(parents=True, exist_ok=True)
+        name = f"{secrets.token_hex(4)}{ext}"
+        (folder / name).write_bytes(raw)
+        return {"path": f"feedback/{name}"}
 
     @api.get("/api/runs/{run_id}/usage")
     def run_usage(run_id: str):

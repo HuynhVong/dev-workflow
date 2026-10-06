@@ -123,6 +123,36 @@ def test_manual_feedback_routes_only_to_affected_repo_and_retests(tmp_path):
     assert st["repos"]["web"]["fix_attempts_used"] == 1 and st["repos"]["api"]["fix_attempts_used"] == 0
 
 
+def test_manual_test_report_with_many_bugs_and_screenshots(tmp_path):
+    from dev_workflows.jira_implement.graph import manual_feedback_items
+    from dev_workflows.jira_implement.models import FeedbackAnalysis, FeedbackItem
+    ws, env = make_env(tmp_path, repos=("api", "web"))
+    fb = FeedbackAnalysis(items=[FeedbackItem(source="manual_test", category="manual_test_feedback", repos=["web"], cause="labels",
+                                              confidence="high", fix_instructions="fix the labels", contract_changed=False)])
+    llm = FakeLLM(["api", "web"], [("api", "web")], overrides={FeedbackAnalysis: [fb]})
+    deps, _, _ = make_deps(tmp_path, ws, env, llm, FakeCoder())
+    g, cfg, out = start(tmp_path, ws, deps)
+    out = answer(g, cfg, choice="approve")
+    assert at(out) == "manual_test"
+    folder = Path(ws.state_dir, "AQS-1-run", "feedback")
+    folder.mkdir(parents=True)
+    (folder / "a.png").write_bytes(b"\x89PNG")
+    (tmp_path / "secret.png").write_bytes(b"\x89PNG")
+    bugs = [{"description": f"bug {i}", "expected": f"expected {i}", "images": []} for i in range(1, 8)]
+    bugs[2]["images"] = ["feedback/a.png", "../../../secret.png", "feedback/missing.png"]
+    bugs.append({"description": "", "expected": "", "images": []})  # an empty card is ignored
+    items = manual_feedback_items({"bugs": bugs, "note": "also check the footer", "repos": ["web"]}, ws.state_dir, "AQS-1-run")
+    assert len(items) == 8 and items[2]["text"] == "Bug 3: bug 3\nExpected: expected 3"
+    assert items[2]["images"] == [str((folder / "a.png").resolve())]  # only the file inside the run's feedback folder
+    assert items[-1]["text"] == "also check the footer"
+    before = len(llm.images)
+    out = answer(g, cfg, choice="feedback", bugs=bugs, repos=["web"])
+    assert at(out) == "manual_test"
+    analyzed = [im for step, im in zip(llm.steps[before:], llm.images[before:]) if step == "analyze_feedback_and_route"]
+    assert analyzed == [[str((folder / "a.png").resolve())]]  # the screenshot reached the analyzer
+    assert "Bug 7: bug 7" in [c[1] for c in llm.calls if c[0] is FeedbackAnalysis][-1]
+
+
 def test_resume_after_crash_does_not_duplicate_mrs_or_comments(tmp_path):
     ws, env = make_env(tmp_path, repos=("api",))
     llm, coder = FakeLLM(["api"], []), FakeCoder()

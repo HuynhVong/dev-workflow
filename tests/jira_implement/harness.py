@@ -149,7 +149,7 @@ class FakeLLM:
     """Answers by schema; `overrides` maps schema -> list of answers (consumed in order, last one repeats)."""
 
     def __init__(self, repos, edges, integration=False, e2e=False, overrides=None, out_of_scope=None):
-        self.calls, self.steps = [], []
+        self.calls, self.steps, self.images = [], [], []
         self.answers = {
             RequirementContext: [RequirementContext(requirement=[], current_business=[], conflicts=[], pages=[])],
             Analysis: [Analysis(summary="Export orders", kind="feature", acceptance_criteria=["CSV respects filters"], questions=[])],
@@ -174,6 +174,7 @@ class FakeLLM:
     def structured(self, system, prompt, schema, images=(), step=""):
         self.calls.append((schema, prompt))
         self.steps.append(step)
+        self.images.append(list(images))
         q = self.answers[schema]
         return q.pop(0) if len(q) > 1 else q[0]
 
