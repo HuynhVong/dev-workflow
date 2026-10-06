@@ -217,11 +217,12 @@ def agent_system(skills_block: str) -> str | dict:
 
 class ClaudeCodeAgent:
     def __init__(self, scope: ScopeGuard, routing: Routing | None = None, mcp_servers: dict | None = None, max_turns: int = 120,
-                 sql_upstream: str = "", strict_mcp: bool = True):
+                 sql_upstream: str = "", strict_mcp: bool = True, read_roots: list[str] | None = None):
         self.scope, self.routing, self.mcp_servers, self.max_turns = scope, routing or Routing(), mcp_servers or {}, max_turns
         # Only `mcp_servers` are loaded, not every server in the developer's Claude Code config: each loaded server's
         # tool definitions ride along on every turn. False when a server the agent needs has no local config to pass.
         self.strict_mcp = strict_mcp
+        self.read_roots = [os.path.realpath(r) for r in (read_roots or [])]  # read-only folders besides the repos (mockups)
         self.sql_upstream = sql_upstream  # the MySQL MCP behind devflow-sql: its own tools are denied to the agent
 
     def implement(self, repo: str, path: str, instructions: str, step: str = "implement", escalate: bool = False) -> CodingResult:
@@ -256,7 +257,7 @@ class ClaudeCodeAgent:
         for r in roots:
             self.scope.require_path(r)
         model = self.routing.model(step, escalate=escalate)
-        skill_roots = [os.path.realpath(d) for d in self.routing.registry.dirs]
+        skill_roots = [os.path.realpath(d) for d in self.routing.registry.dirs] + self.read_roots
         skills = skills_system_block(self.routing.skills(step, repo_path=roots[0]))
         system = agent_system(skills)
         has_sql = PROXY_NAME in self.mcp_servers
@@ -288,7 +289,7 @@ class ClaudeCodeAgent:
         if has_sql:
             hooks["PostToolUse"] = [HookMatcher(matcher=None, hooks=[post_tool_use])]
         options = ClaudeAgentOptions(
-            cwd=roots[0], add_dirs=roots[1:], model=model, effort=self.routing.effort(model),
+            cwd=roots[0], add_dirs=roots[1:] + [d for d in self.read_roots if os.path.isdir(d)], model=model, effort=self.routing.effort(model),
             max_turns=min(max_turns or self.max_turns, self.max_turns), tools=READ_ONLY_TOOLS if read_only else AGENT_TOOLS,
             permission_mode="acceptEdits", setting_sources=["user", "project"], mcp_servers=self.mcp_servers,
             hooks=hooks, system_prompt=system,

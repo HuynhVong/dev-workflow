@@ -44,6 +44,10 @@ STEPS: dict[str, Step] = {
     "repo_review": Step("sonnet", ("code-review", "sonar")),
     "contract_review": Step("opus", ("cross-repo-review",)),
     "summary": Step("haiku", ("implementation-summary",)),
+    # mockups and notes the developer gives a run (read once into a text brief that later steps use instead of the images)
+    "mockup_brief": Step("sonnet"),
+    # Freely Implement: the ordered manual test the developer runs before approving the push
+    "manual_test_cases": Step("sonnet", ("playwright",)),
     # address-review
     "classify_comments": Step("sonnet", ("code-review",)),
     "map_to_repos": Step("sonnet", ("planning",)),

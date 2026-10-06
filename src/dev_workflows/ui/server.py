@@ -15,7 +15,7 @@ from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 from .. import doctor
-from ..jira_implement import worktrees
+from ..jira_implement import task_inputs, worktrees
 from ..jira_implement.runner import RunConflict, Session, jsonable, trim
 from ..jira_implement.workspace import MASK, masked, read_raw, save_raw
 from ..routing import Routing
@@ -194,6 +194,16 @@ def create_app(state: App) -> FastAPI:
         except (ValueError, KeyError) as e:
             raise HTTPException(400, {"error": "invalid", "detail": str(e).strip("'\"")}) from e
         return {"run_id": run_id, "queued": run_id in manager.queued()}
+
+    @api.post("/api/uploads")
+    def upload(body: dict = Body(...)):
+        """One image for a start form: {name, data} with data base64 (a data: URL is fine). Returns {id, name, size}; the
+        form sends the ids back as `images` and the run keeps its own copies."""
+        session, _ = state.need()
+        try:
+            return task_inputs.save_upload(session.ws, str(body.get("name") or "image"), str(body.get("data") or ""))
+        except task_inputs.InputError as e:
+            raise HTTPException(400, {"error": "invalid", "detail": str(e)}) from e
 
     @api.get("/api/runs/{run_id}")
     def run_detail(run_id: str):

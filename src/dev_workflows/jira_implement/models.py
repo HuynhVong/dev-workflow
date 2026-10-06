@@ -193,3 +193,26 @@ class CommentDraft(BaseModel):
                     "blocked: the review could not be completed.")
     summary: str = Field(description="Three to five plain sentences for the Jira comment: what the ticket needs, whether "
                                      "the commits deliver it, and what the tests showed.")
+
+
+class DesignBrief(BaseModel):
+    """What the developer's mockups and notes ask for, in words, so later steps need not look at the images again."""
+    summary: str = Field(description="One or two sentences: what the mockups show and what the notes ask for.")
+    screens: list[str] = Field(description="Each screen or area: its layout (regions, order, alignment) and what is on it.")
+    components: list[str] = Field(description="UI components and their states (buttons, inputs, tables, dialogs, empty/loading/error).")
+    texts: list[str] = Field(description="Exact visible labels, headings, placeholders and messages, verbatim.")
+    styling: list[str] = Field(description="Colors, typography, spacing, sizes, icons and any visual rule that can be read off.")
+    interactions: list[str] = Field(description="Behaviour the mockups or notes imply: clicks, navigation, validation, responsive changes.")
+    ambiguities: list[str] = Field(description="Things the images and notes do not settle and that change the result. Empty if none.")
+
+
+class ManualCase(BaseModel):
+    title: str
+    steps: list[str] = Field(description="Numbered actions, in the order to do them.")
+    expected: str = Field(description="What the developer must see or get.")
+    covers: str = Field(description="The acceptance criterion or mockup part this proves.")
+
+
+class ManualTest(BaseModel):
+    """The ordered manual test a developer runs locally before approving the push."""
+    cases: list[ManualCase]

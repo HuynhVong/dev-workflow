@@ -81,6 +81,7 @@ review_status: Code Review
 vcs_prefix: rtk                     # every git/glab call is `rtk git ...` / `rtk glab ...`
 state_dir: .devflow                 # SQLite checkpoints, audit log and side-effect ledger
 max_fix_attempts: 3                 # automated fix attempts per repo for a whole run, never reset
+branch_prefix: ""                   # Freely implement: branch names must start with this, e.g. "feature/" (blank = any)
 
 # Standup / work report: which status moves count (match your board) and the day boundaries' timezone
 # (default: your Jira profile's timezone, else this machine's).

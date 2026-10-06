@@ -169,6 +169,28 @@ def test_ticket_run_end_to_end_through_the_api(env):
     assert any(e["action"] == "create_mr" for e in audit["side_effects"])
 
 
+def test_free_run_with_an_uploaded_mockup_through_the_api(env):
+    import base64
+    c = env.client
+    wf = {w["id"]: w for w in c.get("/api/workflows").json()["workflows"]}["free_implement"]
+    assert [f["name"] for f in wf["form"]] == ["description", "images", "note", "branch", "ref", "repos"]
+    assert next(f for f in wf["form"] if f["name"] == "images")["type"] == "images" and wf["kind"] == "ticket"
+    assert c.post("/api/uploads", json={"name": "notes.txt", "data": "eA=="}).status_code == 400
+    png = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"x" * 32).decode()
+    up = c.post("/api/uploads", json={"name": "mock.png", "data": png}).json()
+    bad = c.post("/api/runs", json={"workflow": "free_implement", "values": {"description": "x", "branch": "main", "repos": ["api"]}})
+    assert bad.status_code == 400 and "long-lived" in bad.json()["detail"]["detail"]
+    values = {"description": "Export orders as CSV", "branch": "feature/export", "repos": ["api", "web"], "images": [up["id"]], "note": "blue"}
+    run_id = c.post("/api/runs", json={"workflow": "free_implement", "values": values}).json()["run_id"]
+    assert c.post("/api/runs", json={"workflow": "free_implement", "values": values}).status_code == 409
+    r = wait_status(c, run_id, "WAITING_HUMAN")
+    assert r["pending"]["name"] == "approve_plan" and r["label"] == "Export orders as CSV"
+    shown = r["pending"]["payload"]["design_brief"]["images"][0]
+    served = c.get(f"/api/runs/{run_id}/file", params={"path": shown})  # the run page shows the mockup from here
+    assert served.status_code == 200 and served.content.startswith(b"\x89PNG")
+    c.post(f"/api/runs/{run_id}/answer", json={"choice": "abort"})
+
+
 def test_ticket_review_run_through_the_api_and_its_files(env):
     c = env.client
     r = c.post("/api/runs", json={"workflow": "ticket_review", "values": {"ticket": "aqs-1", "commits": ["web=abc1234"]}})
