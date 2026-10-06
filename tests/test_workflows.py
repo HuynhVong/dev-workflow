@@ -47,8 +47,18 @@ def test_pr_review_fans_out_and_sorts_findings():
     llm = FakeLLM({pr_review.Triage: triage,
                    pr_review.LensReview: [finding("nit"), finding("blocker"), finding("minor"), finding("major"), finding("nit")],
                    pr_review.Verdict: pr_review.Verdict(decision="request_changes", summary="Fix the blocker.")})
-    out = pr_review.build_graph(llm).invoke({"title": "Search", "diff": "+code", "findings": []})
+    out = pr_review.build_graph(llm).invoke({"title": "Search", "diff": "+code\n" * 2000, "findings": []})
     lenses = {p.split("through the ")[1].split(" lens")[0] for s, p in llm.calls if s is pr_review.LensReview}
     assert lenses == {"correctness", "tests", "frontend", "security", "performance"}
     assert len(out["findings"]) == 5
     assert out["output"].index("[blocker]") < out["output"].index("[nit]")
+
+
+def test_pr_review_small_diff_is_one_call_through_every_lens_and_skips_triage():
+    llm = FakeLLM({pr_review.LensReview: pr_review.LensReview(findings=[]),
+                   pr_review.Verdict: pr_review.Verdict(decision="approve", summary="ok")})
+    out = pr_review.build_graph(llm).invoke({"title": "Tiny", "diff": "+code", "findings": []})
+    assert [s for s, _ in llm.calls] == [pr_review.LensReview, pr_review.Verdict]
+    prompt = llm.calls[0][1]
+    assert all(lens in prompt for lens in ("correctness", "security", "performance", "tests", "frontend"))
+    assert out["verdict"].decision == "approve"

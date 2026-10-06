@@ -291,7 +291,7 @@ class ClaudeCodeAgent:
         options = ClaudeAgentOptions(
             cwd=roots[0], add_dirs=roots[1:] + [d for d in self.read_roots if os.path.isdir(d)], model=model, effort=self.routing.effort(model),
             max_turns=min(max_turns or self.max_turns, self.max_turns), tools=READ_ONLY_TOOLS if read_only else AGENT_TOOLS,
-            permission_mode="acceptEdits", setting_sources=["user", "project"], mcp_servers=self.mcp_servers,
+            permission_mode="acceptEdits", setting_sources=["project"], mcp_servers=self.mcp_servers,
             hooks=hooks, system_prompt=system,
             output_format={"type": "json_schema", "schema": schema},
             extra_args={"disable-slash-commands": None, **({"strict-mcp-config": None} if self.strict_mcp else {})},

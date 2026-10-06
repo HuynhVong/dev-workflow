@@ -271,6 +271,12 @@ def _j(obj: Any) -> str:
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False, default=str)
 
 
+def _plan_for_feedback(plan: dict) -> dict:
+    """The plan without its test plan and risks: classifying feedback needs the repos' tasks, edges and contracts,
+    not the criterion-to-test mapping."""
+    return {k: v for k, v in plan.items() if k not in ("test_plan", "risks")}
+
+
 def _branch(state: dict) -> str:
     """The git branch of this run: the Jira key, or the developer's own name in Freely Implement."""
     return state.get("branch") or state["ticket_key"]
@@ -557,7 +563,7 @@ def build_graph(deps: Deps, checkpointer=None, free: bool = False):
         repos_desc = "\n".join(f"- {n} (ui={ws.repos[n].has_ui})" for n in state["scope"]) if state["scope"] else "(none)"
         other = [n for n in ws.repos if n not in state["scope"]]
         prompt = (
-            _ticket_block(state)
+            _ticket_block(state, context=False)
             + f"\n<analysis>\n{_j(state['analysis'])}\n</analysis>\n<allowed_repos>\n{repos_desc}\n</allowed_repos>\n"
             + f"<other_workspace_repos_not_allowed>{other}</other_workspace_repos_not_allowed>\n\n"
             "Determine the change impact. candidate_repos must come only from allowed_repos. If another repo seems "
@@ -618,7 +624,7 @@ def build_graph(deps: Deps, checkpointer=None, free: bool = False):
     def discover_repos(state):
         vcs, coder = deps.vcs(state), deps.coder(state)
         findings, needs = {}, []
-        question = (f"{_ticket_block(state)}\n<analysis>{_j(state['analysis'])}</analysis>\n<impact>{_j(state['impact'])}</impact>\n\n"
+        question = (f"{_ticket_block(state, context=False)}\n<analysis>{_j(state['analysis'])}</analysis>\n<impact>{_j(state['impact'])}</impact>\n\n"
                     "Find the modules, routes, components and tables in THIS repository that the change touches. "
                     "Set confirmed=false if this repository does not need to change.")
         for repo in state["impact"]["candidate_repos"]:
@@ -1071,7 +1077,7 @@ def build_graph(deps: Deps, checkpointer=None, free: bool = False):
         status = {r: {"fix_attempts_used": rs.get("fix_attempts_used", 0), "status": rs["status"]} for r, rs in repos.items()}
         fa = llm.structured(SYSTEM, (
             _ticket_block(state, context=False)
-            + f"\n<plan>{_j(state['plan'])}</plan>\n<dag>{_j(state['dag'])}</dag>\n<repos_in_scope>{list(state['scope'])}</repos_in_scope>\n"
+            + f"\n<plan>{_j(_plan_for_feedback(state['plan']))}</plan>\n<dag>{_j(state['dag']['edges'])}</dag>\n<repos_in_scope>{list(state['scope'])}</repos_in_scope>\n"
             f"<repo_status>{_j(status)}</repo_status>\n<feedback>{_j(items_in)}</feedback>\n\n"
             "Classify each feedback item. Decide which repos must change, the cause and your confidence. Use requirement_gap "
             "when the requirement itself is unclear or missing, scope_issue when a repo outside repos_in_scope must change, "
