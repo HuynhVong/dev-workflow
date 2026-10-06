@@ -13,7 +13,7 @@ from typing_extensions import NotRequired, TypedDict
 from ..llm import StructuredLLM, default_llm
 from ..textutil import diff_digest
 
-Lens = Literal["correctness", "security", "performance", "tests", "frontend"]
+Lens = Literal["correctness", "security", "performance", "tests", "frontend", "all"]
 Severity = Literal["blocker", "major", "minor", "nit"]
 SEVERITY_ORDER = {"blocker": 0, "major": 1, "minor": 2, "nit": 3}
 
@@ -24,6 +24,9 @@ LENS_GUIDE: dict[str, str] = {
     "tests": "untested behaviour changes, brittle tests, missing regression test for the bug fixed",
     "frontend": "accessibility, loading/error/empty states, state management, responsive layout, i18n",
 }
+# A small diff gets one review that covers every lens at once (see SMALL_DIFF).
+ALL_LENS = "all"
+LENS_GUIDE[ALL_LENS] = "; ".join(f"{k}: {v}" for k, v in list(LENS_GUIDE.items()))
 
 
 class Triage(BaseModel):
@@ -85,6 +88,9 @@ class LensTask(TypedDict):
 
 # Every lens reads the whole diff, so the diff is sent once per lens (2 to 5) plus once to triage. Over its budget a diff
 # is digested (file list with +/- counts, whole files while they fit) rather than sent in full to each of them.
+# Under SMALL_DIFF chars (about 1.5k tokens) the diff is cheaper to read once than to triage and then read again per lens:
+# no triage call, one review call through every lens. Every lens still looks at it, so nothing is skipped.
+SMALL_DIFF = 6000
 TRIAGE_DIFF = 8000   # triage only picks lenses and a risk level: the file list and the first files are enough
 LENS_DIFF = 30000
 
@@ -103,6 +109,8 @@ def build_graph(llm: StructuredLLM | None = None, checkpointer=None):
         return llm or default_llm()
 
     def triage(state: State):
+        if len(state["diff"]) <= SMALL_DIFF:
+            return {"triage": Triage(summary=state["title"], touches_frontend=True, risk="medium", lenses=[ALL_LENS])}
         t = get_llm().structured(
             SYSTEM, _pr(state["title"], state.get("description", ""), diff_digest(state["diff"], TRIAGE_DIFF)) + "\n\nTriage this PR.", Triage, step="pr_review.triage"
         )

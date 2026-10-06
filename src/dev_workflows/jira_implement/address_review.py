@@ -432,7 +432,7 @@ def build_review_graph(deps: Deps, checkpointer=None):
         status = {r: {"fix_attempts_used": rs.get("fix_attempts_used", 0), "status": rs["status"]} for r, rs in repos.items()}
         answers = "\n".join(state.get("answers", []))
         fa = llm.structured(SYSTEM, (
-            f"Ticket {state['ticket_key']}, review-fix round.\n<review_fixes>{fixes_block(state)}</review_fixes>\n<dag>{_j(state['dag'])}</dag>\n"
+            f"Ticket {state['ticket_key']}, review-fix round.\n<review_fixes>{fixes_block(state)}</review_fixes>\n<dag>{_j(state['dag']['edges'])}</dag>\n"
             f"<repos_in_scope>{list(repos)}</repos_in_scope>\n<repo_status>{_j(status)}</repo_status>\n"
             + (f"<developer_answers>{answers}</developer_answers>\n" if answers else "")
             + f"<feedback>{_j(items_in)}</feedback>\n\nClassify each feedback item: which repos must change, the cause and your "

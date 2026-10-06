@@ -133,7 +133,7 @@ def test_full_review_checks_out_tests_with_your_help_and_posts_after_approval(tm
     cases = payload(out)["cases"]
     assert [c["id"] for c in cases] == ["TC1", "TC2"] and cases[0]["mode"] == "needs_you"
     assert payload(out)["coverage"]["criteria"][0]["status"] == "met"
-    assert sha in "".join(prompt for _, prompt in llm.calls if "Triage this PR" in prompt)  # the listed commit was reviewed
+    assert sha in "".join(prompt for _, prompt in llm.calls if "<pr_title>" in prompt)  # the listed commit was reviewed
     assert not mcp.writes()
 
     out = answer(g, cfg, choice="approve", run=["TC1"], note="Test user: qa@acme.io")

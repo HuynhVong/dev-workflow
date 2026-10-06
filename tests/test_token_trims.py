@@ -123,3 +123,15 @@ def test_jira_calls_stop_after_the_tool_runs_and_structured_calls_skip_user_conf
     from dev_workflows.llm import NO_EXTRAS
     i = NO_EXTRAS.index("--setting-sources")
     assert NO_EXTRAS[i + 1] == "project"
+
+
+def test_feedback_analysis_gets_the_plan_without_its_test_plan_and_risks():
+    from dev_workflows.jira_implement.graph import _plan_for_feedback
+    plan = {"repos": [{"repo": "api"}], "edges": [], "contracts": ["c"], "migrations": [], "test_plan": [{"criterion": "x"}], "risks": ["r"]}
+    assert set(_plan_for_feedback(plan)) == {"repos", "edges", "contracts", "migrations"}
+
+
+def test_coding_agent_does_not_load_the_developers_user_settings():
+    import inspect
+    from dev_workflows.jira_implement import coding_agent
+    assert 'setting_sources=["project"]' in inspect.getsource(coding_agent.ClaudeCodeAgent._run)
