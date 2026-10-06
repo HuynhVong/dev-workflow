@@ -58,6 +58,12 @@ mcp_servers:
 #   jira: claude.ai Atlassian
 #   confluence: claude.ai Atlassian
 #   playwright: ""
+#   mysql: mysql                     # optional: dev MySQL MCP, read-only through devflow-sql (see README)
+# sql:                               # optional devflow-sql settings
+#   timeout_s: 30
+#   max_retries: 3
+#   idle_ping_s: 240
+#   deny_hosts: [prod-db.internal]
 
 jira_server: atlassian
 confluence_server: atlassian

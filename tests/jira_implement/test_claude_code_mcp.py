@@ -52,7 +52,7 @@ def jira_mcp(runs, **kw):
 def test_servers_and_suggestions_come_from_the_init_event():
     servers = claude_code_servers(init())
     assert servers["claude.ai Atlassian"] == {"status": "connected", "tools": OFFICIAL}
-    assert suggest(servers) == {"jira": "claude.ai Atlassian", "confluence": "claude.ai Atlassian", "playwright": "pw"}
+    assert suggest(servers) == {"jira": "claude.ai Atlassian", "confluence": "claude.ai Atlassian", "playwright": "pw", "mysql": ""}
     assert suggest(claude_code_servers(init(status="needs-auth")))["jira"] == "claude.ai Atlassian"
 
 

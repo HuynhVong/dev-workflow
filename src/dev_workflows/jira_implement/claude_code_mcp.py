@@ -67,6 +67,21 @@ def _words(name: str) -> set[str]:
     return {w.lower() for w in re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+", name)}
 
 
+def match_tool(op: str, wanted: str, available: list[str], equivalents: dict[str, set[str]]) -> str | None:
+    """The server's tool for one devflow operation: the configured name, a known equivalent, else the one tool the
+    word rules fit. None when there is none (or more than one fits)."""
+    if wanted in available:
+        return wanted
+    names = {_norm(wanted), _norm(op)} | equivalents.get(op, set())
+    found = next((t for t in available if _norm(t) in names), None)
+    if found or op not in WORD_RULES:
+        return found
+    need, never, one_of = WORD_RULES[op]
+    fits = [t for t in available
+            if need <= _words(t) and not never & _words(t) and (not one_of or one_of & _words(t))]
+    return fits[0] if len(fits) == 1 else None
+
+
 def tool_prefix(server: str) -> str:
     """Claude Code names a server's tools mcp__<server>__<tool>, with characters outside [A-Za-z0-9_-] as `_`."""
     return f"mcp__{re.sub(r'[^A-Za-z0-9_-]', '_', server)}__"
@@ -161,18 +176,7 @@ class ClaudeCodeMcp:
 
     def resolve(self, op: str) -> str | None:
         """The server's tool for one devflow operation, or None when it has none."""
-        available = self._server_tools()
-        wanted = self.tools.get(op, "")
-        if wanted in available:
-            return wanted
-        names = {_norm(wanted), _norm(op)} | self.equivalents.get(op, set())
-        found = next((t for t in available if _norm(t) in names), None)
-        if found or op not in WORD_RULES:
-            return found
-        need, never, one_of = WORD_RULES[op]
-        fits = [t for t in available
-                if need <= _words(t) and not never & _words(t) and (not one_of or one_of & _words(t))]
-        return fits[0] if len(fits) == 1 else None
+        return match_tool(op, self.tools.get(op, ""), self._server_tools(), self.equivalents)
 
     def related(self, op: str) -> list[str]:
         """The server's tools that share a key word with `op` (shown by doctor when it can't pick one)."""
@@ -292,7 +296,7 @@ def confluence_mcp(ws, init: Callable[[], dict] = cached_init, run: Callable = s
 
 
 # --- setup: picking the servers ----------------------------------------------------------------------------------
-USES = ("jira", "confluence", "playwright")
+USES = ("jira", "confluence", "playwright", "mysql")
 
 
 def suggest(servers: dict[str, dict]) -> dict[str, str]:
@@ -302,8 +306,12 @@ def suggest(servers: dict[str, dict]) -> dict[str, str]:
         names = {_norm(t) for t in info["tools"]}
         if use == "playwright":
             return any(n.startswith("browser") for n in names)
+        if use == "mysql":
+            from .sql_mcp import QUERY_TOOLS
+            return bool(names & set(QUERY_TOOLS) - {"query", "execute"})
         return bool(names & (JIRA_EQUIVALENTS["get_issue"] if use == "jira" else CONFLUENCE_EQUIVALENTS["get_page"]))
-    words = {"jira": ("jira", "atlassian"), "confluence": ("confluence", "atlassian"), "playwright": ("playwright",)}
+    words = {"jira": ("jira", "atlassian"), "confluence": ("confluence", "atlassian"), "playwright": ("playwright",),
+             "mysql": ("mysql", "mariadb")}
     out = {}
     for use in USES:
         by_tools = [n for n, i in servers.items() if i["status"] == "connected" and fits(i, use)]

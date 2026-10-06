@@ -4,7 +4,7 @@
 
 Jira workflows (need workspace.yaml, see workspace.example.yaml):
   devflow standup [--from 2026-10-01] [--to 2026-10-03] [--template report.md] [--no-input]
-  devflow setup [--ticket AQS-5512] [--jira-mcp NAME] [--confluence-mcp NAME] [--playwright-mcp NAME]
+  devflow setup [--ticket AQS-5512] [--jira-mcp NAME] [--confluence-mcp NAME] [--playwright-mcp NAME] [--mysql-mcp NAME]
                                           first run: which Claude Code MCP servers to use, Jira MCP (required),
                                           models per step, global skills to install
   devflow implement AQS-5512 [--repos api-service,web-portal] [--no-input]
@@ -113,7 +113,8 @@ def _choose_claude_code_mcp(a, ws) -> bool:
         if not ask:
             choice[use] = current
             continue
-        answer = input(f"{use.title()} via which Claude Code MCP? [{default or 'none: use the default'}] "
+        label = "MySQL (dev DB, optional, read-only)" if use == "mysql" else use.title()
+        answer = input(f"{label} via which Claude Code MCP? [{default or 'none: use the default'}] "
                        "(Enter = keep, '-' = none): ").strip()
         choice[use] = "" if answer == "-" else (answer or default)
         if choice[use] and choice[use] not in servers:
@@ -169,9 +170,10 @@ def _add_implement_commands(sub) -> None:
     su = sub.add_parser("setup", help="first-time setup: Jira MCP (required), models per step, global Claude Code skills")
     su.add_argument("--workspace", help="path to workspace.yaml (default: $DEVFLOW_WORKSPACE or ./workspace.yaml)")
     su.add_argument("--ticket", help="a ticket key you can see, to prove the Jira MCP can read it")
-    for use in ("jira", "confluence", "playwright"):
+    for use, label in (("jira", "Jira"), ("confluence", "Confluence"), ("playwright", "Playwright"),
+                       ("mysql", "the dev MySQL database (optional, read-only)")):
         su.add_argument(f"--{use}-mcp", metavar="NAME", default=None,
-                        help=f"Claude Code MCP server for {use.title()} (as `claude mcp list` names it); '' = default")
+                        help=f"Claude Code MCP server for {label} (as `claude mcp list` names it); '' = default")
     su.add_argument("--no-input", action="store_true", help="do not ask which Claude Code MCP servers to use")
 
     def do_setup(a):

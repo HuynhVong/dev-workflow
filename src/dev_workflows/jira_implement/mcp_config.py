@@ -78,8 +78,12 @@ def jira_mcp_for(ws, files: list[Path] | None = None):
     login and connectors), else devflow's own client for the server resolve_jira_server finds."""
     from .mcp_client import StdioOrHttpMcp
     if ws.claude_code_mcp.get("jira"):
-        from .claude_code_mcp import jira_mcp
-        return jira_mcp(ws), f"Claude Code login: {ws.claude_code_mcp['jira']}"
+        from .claude_code_mcp import JIRA_EQUIVALENTS, jira_mcp
+        name = ws.claude_code_mcp["jira"]
+        direct = _direct(ws, name, ws.jira_tools, JIRA_EQUIVALENTS, lambda: jira_mcp(ws), files=files)
+        if direct is not None:
+            return direct, f"{name}: direct, Claude Code login as fallback"
+        return jira_mcp(ws), f"Claude Code login: {name}"
     found = resolve_jira_server(ws, files)
     if not found:
         return None, ""
@@ -87,13 +91,28 @@ def jira_mcp_for(ws, files: list[Path] | None = None):
     return StdioOrHttpMcp(name, cfg), source
 
 
+def _direct(ws, name: str, tools: dict, equivalents: dict, fallback, read_only: bool = False,
+            files: list[Path] | None = None):
+    """A DirectMcp to Claude Code's server `name` when it has a local config devflow can start (and `mcp_direct` is
+    not turned off), else None: then every call goes through the Claude Code login."""
+    if not getattr(ws, "mcp_direct", True):
+        return None
+    found = claude_code_mcp_servers(files).get(name)
+    if not found or not (found["config"].get("command") or found["config"].get("url")):
+        return None
+    from .direct_mcp import DirectMcp
+    return DirectMcp(name, found["config"], tools, equivalents, read_only=read_only, fallback=fallback)
+
+
 def confluence_mcp_for(ws, jira_mcp=None, files: list[Path] | None = None):
     """McpTools for Confluence (always read-only above this layer), or None: claude_code_mcp.confluence, else the
     workspace's confluence_server, else the Jira server when both are the same Atlassian server."""
     from .mcp_client import StdioOrHttpMcp
     if ws.claude_code_mcp.get("confluence"):
-        from .claude_code_mcp import confluence_mcp
-        return confluence_mcp(ws)
+        from .claude_code_mcp import CONFLUENCE_EQUIVALENTS, confluence_mcp
+        direct = _direct(ws, ws.claude_code_mcp["confluence"], ws.confluence_tools, CONFLUENCE_EQUIVALENTS,
+                         lambda: confluence_mcp(ws), read_only=True, files=files)
+        return direct if direct is not None else confluence_mcp(ws)
     if ws.confluence_server in ws.mcp_servers:
         return StdioOrHttpMcp(ws.confluence_server, ws.mcp_servers[ws.confluence_server])
     if ws.confluence_server != ws.jira_server:
@@ -118,3 +137,62 @@ def playwright_servers(ws, files: list[Path] | None = None) -> dict[str, dict]:
 
 def has_playwright(ws) -> bool:
     return bool(ws.claude_code_mcp.get("playwright")) or any("playwright" in k.lower() for k in ws.mcp_servers)
+
+
+# --- the dev MySQL MCP, always behind devflow-sql ------------------------------------------------------------------
+def resolve_sql_server(ws, files: list[Path] | None = None) -> tuple[str, dict, str] | None:
+    """(name, config, source) of the MySQL MCP server, or None when none is configured. workspace.yaml's
+    `sql.server` under mcp_servers wins, else the Claude Code server chosen under claude_code_mcp.mysql (or named by
+    sql.server). Raises ValueError when the chosen server has no local config devflow can start (an account-level
+    connector), or its config names a host in sql.deny_hosts."""
+    sql = getattr(ws, "sql", None) or {}
+    name = str(sql.get("server") or "").strip()
+    found = None
+    if name and name in ws.mcp_servers:
+        found = name, ws.mcp_servers[name], "workspace.yaml"
+    else:
+        name = ws.claude_code_mcp.get("mysql") or name
+        if not name:
+            return None
+        cc = claude_code_mcp_servers(files)
+        if name not in cc:
+            raise ValueError(f"no local config for MySQL MCP '{name}' (looked in workspace.yaml mcp_servers and "
+                             f"Claude Code's {', '.join(str(f) for f in (files if files is not None else claude_code_config_files()))}); "
+                             "devflow has to start it itself to reconnect it, so add it with `claude mcp add` or "
+                             "under mcp_servers in workspace.yaml")
+        found = name, cc[name]["config"], cc[name]["source"]
+    text = json.dumps(found[1]).lower()
+    for host in sql.get("deny_hosts") or []:
+        if str(host).strip() and str(host).strip().lower() in text:
+            raise ValueError(f"MySQL MCP '{found[0]}' points at {host}, which is in sql.deny_hosts")
+    return found
+
+
+def sql_servers(ws, files: list[Path] | None = None) -> tuple[dict[str, dict], str]:
+    """({"devflow-sql": stdio config}, upstream server name) for the coding agents, or ({}, "") when no MySQL MCP
+    is configured or it can't be used (doctor says why). The agents get only the proxy; the upstream's own tools are
+    denied to them so every query goes through the read-only guard and the reconnect logic."""
+    import sys
+
+    from .sql_mcp import ENV_VAR, PROXY_NAME
+    try:
+        found = resolve_sql_server(ws, files)
+    except ValueError:
+        return {}, ws.claude_code_mcp.get("mysql", "")
+    if not found:
+        return {}, ""
+    name, cfg, _ = found
+    settings = {k: v for k, v in (getattr(ws, "sql", None) or {}).items() if k != "server"}
+    spec = json.dumps({"name": name, "config": cfg, "settings": settings})
+    return {PROXY_NAME: {"command": sys.executable, "args": ["-m", "dev_workflows.jira_implement.sql_mcp"],
+                         "env": {ENV_VAR: spec}}}, name
+
+
+def sql_gateway(ws, files: list[Path] | None = None):
+    """A SqlGateway in this process (doctor), or None when no MySQL MCP is configured. Raises like resolve_sql_server."""
+    from .sql_mcp import SqlGateway
+    found = resolve_sql_server(ws, files)
+    if not found:
+        return None
+    settings = {k: v for k, v in (getattr(ws, "sql", None) or {}).items() if k != "server"}
+    return SqlGateway(found[0], found[1], settings)
