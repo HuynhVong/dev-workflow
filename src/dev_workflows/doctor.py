@@ -232,6 +232,43 @@ def sql_checks(ws, gateway=None) -> list[Check]:
     return out
 
 
+# The arguments devflow sends per operation, to tell whether a server's own tool can take them directly.
+SAMPLE_ARGS = {
+    "get_issue": {"issue_key": "X-1", "fields": "summary", "comment_limit": 10},
+    "get_transitions": {"issue_key": "X-1"}, "transition_issue": {"issue_key": "X-1", "transition_id": "1"},
+    "add_comment": {"issue_key": "X-1", "comment": "c"}, "edit_comment": {"issue_key": "X-1", "comment_id": "1", "comment": "c"},
+    "search": {"jql": "key = X-1", "fields": "summary", "limit": 1, "start_at": 0},
+    "get_user_profile": {"user_identifier": "me"}, "batch_changelogs": {"issue_ids_or_keys": ["X-1"], "fields": ["status"]},
+    "download_attachments": {"issue_key": "X-1", "target_dir": "/tmp"},
+    "get_page": {"page_id": "1"}, "get_page_children": {"parent_id": "1"},
+}
+
+
+def direct_route_checks(mcp, group: str) -> list[Check]:
+    """For a server devflow starts directly: which calls go direct (fast) and which through Claude Code (slow)."""
+    from .jira_implement.direct_mcp import DirectMcp
+    if not isinstance(mcp, DirectMcp):
+        return []
+    ops = [op for op, name in mcp.tools.items() if name]
+    if not ops:
+        return []
+    samples = {**SAMPLE_ARGS, "search": {"query": "q", "limit": 1}} if mcp.read_only else SAMPLE_ARGS
+    routes = {op: mcp.route(op, samples.get(op)) for op in ops}
+    direct = [op for op, (kind, _) in routes.items() if kind == "direct"]
+    slow = {op: why for op, (kind, why) in routes.items() if kind != "direct"}
+    cid = f"direct.{mcp.server}"
+    if not direct:
+        return [_warn(cid, group, f"{mcp.server}: direct", "every call goes through Claude Code (slow): "
+                      + (mcp.start_error[:200] or "; ".join(f"{o}: {w}" for o, w in slow.items())),
+                      "Check that the server starts with the command in ~/.claude.json, or map its tool names in workspace.yaml.")]
+    detail = "direct: " + ", ".join(f"{op} -> {routes[op][1]}" for op in direct)
+    if slow:
+        return [_warn(cid, group, f"{mcp.server}: direct", detail + ". Through Claude Code (slow): "
+                      + "; ".join(f"{o} ({w})" for o, w in slow.items()),
+                      "Map those operations to the server's tools under jira_tools / confluence_tools in workspace.yaml.")]
+    return [_ok(cid, group, f"{mcp.server}: direct", detail)]
+
+
 def jira_gateway(ws):
     """(JiraGateway, source) for the Jira server (Claude Code login, workspace.yaml or Claude Code's config), or (None, "")."""
     from .jira_implement.jira import JiraGateway
@@ -389,6 +426,8 @@ def run(ws, deps=None, repos: list[str] | None = None, which: Callable = shutil.
     if deps is None:
         checks += claude_code_mcp_checks(ws) + sql_checks(ws)
     checks += mcp_checks(ws, jira, confluence, need_confluence=not review)
+    checks += direct_route_checks(getattr(jira, "mcp", None), "Jira MCP")
+    checks += direct_route_checks(getattr(confluence, "_mcp", None), "Confluence MCP")
     checks += [c for c in jira_access_checks(ws, jira, source) if c.id != "mcp.jira.setup"]
     if review and not any(c.id == "mcp.playwright" for c in checks):
         has = has_playwright(ws)

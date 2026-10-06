@@ -83,9 +83,17 @@ whether each is connected) and asks which one to use for Jira, Confluence and Pl
 Claude Code's own config files). Non-interactive: `devflow setup --jira-mcp "claude.ai Atlassian" --confluence-mcp
 "claude.ai Atlassian"`.
 
-With a server chosen there, each Jira or Confluence call runs `claude -p` (Haiku) allowed to use only the one tool
-for that call, and devflow reads the tool's raw result, so no Jira or Confluence token is needed and the connector's
-sign-in stays inside Claude Code. Each call takes several seconds and counts against your plan's usage. Confluence
+**Direct when possible.** When the chosen server has a local config in Claude Code's files (a server added with
+`claude mcp add`, such as pal-jira in `~/.claude.json`), devflow starts it itself and keeps one session open, so a
+call takes about a second. Its own tool and argument names are matched (`issue_key` -> `issueKey`, `comment` ->
+`body`...). A call it can't match, or whose arguments the server rejects, goes through Claude Code instead, and a read
+on a server that died is retried on a fresh one. `devflow doctor` lists which calls go direct and which through
+Claude Code. Set `mcp_direct: false` in `workspace.yaml` to send everything through Claude Code.
+
+**Through Claude Code** (account connectors such as "claude.ai Atlassian", and the fallback), each call runs
+`claude -p` (Haiku) allowed to use only the one tool for that call, and devflow reads the tool's raw result, so no
+Jira or Confluence token is needed and the connector's sign-in stays inside Claude Code. Each call takes several
+seconds and counts against your plan's usage. Confluence
 stays read-only: its write tools are never allowed. The official Atlassian connector has no tool to download or
 upload attachments or to edit a comment, so with it ticket attachments are not downloaded, review screenshots stay
 local, and devflow adds its comment once instead of updating it. `devflow doctor` shows each chosen server's state;
@@ -297,6 +305,7 @@ src/dev_workflows/
     mcp_client.py        devflow's own MCP client (stdio, HTTP, SSE); reports the server's real error
     mcp_config.py        picks the client per server: claude_code_mcp, workspace.yaml, or Claude Code's config
     claude_code_mcp.py   Jira/Confluence through the logged-in Claude Code's MCP servers (`claude -p`, one tool)
+    direct_mcp.py        a claude_code_mcp server started directly (one open session), Claude Code as fallback
     sql_mcp.py           devflow-sql: read-only proxy in front of the dev MySQL MCP, with reconnect and retry
     vcs.py               the only place git/glab run: always `rtk git|glab`, deny-list, scope check
     scope.py             frozen repo allow-list (--repos)
