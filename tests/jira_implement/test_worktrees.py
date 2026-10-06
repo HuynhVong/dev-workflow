@@ -52,10 +52,10 @@ def test_three_tickets_on_the_same_repos_run_at_once_without_touching_each_other
     for key in keys:
         assert "completed" in outs[key]["output"]
         for repo in ("api", "web"):
-            path = wt(ws, repo, key)
-            assert sh("git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD") == key
-            assert sh("git", "-C", path, "rev-parse", "HEAD") == sh("git", "--git-dir", str(tmp_path / f"origin/{repo}.git"), "rev-parse", key)
-            assert f"Devflow-Run: {key}-run" in sh("git", "-C", path, "log", "-1", "--format=%B")
+            main = ws.repos[repo].path  # completed: the clean worktree is gone, the branch stays
+            assert not Path(wt(ws, repo, key)).exists()
+            assert sh("git", "-C", main, "rev-parse", key) == sh("git", "--git-dir", str(tmp_path / f"origin/{repo}.git"), "rev-parse", key)
+            assert f"Devflow-Run: {key}-run" in sh("git", "-C", main, "log", "-1", "--format=%B", key)
     for repo in ("api", "web"):  # the main clone was never switched or edited
         main = ws.repos[repo].path
         assert sh("git", "-C", main, "rev-parse", "--abbrev-ref", "HEAD") == "develop"

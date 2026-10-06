@@ -1,3 +1,4 @@
+from pathlib import Path
 import sqlite3
 
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -56,8 +57,10 @@ def test_happy_path_two_repos_in_dependency_order(tmp_path):
     assert mcp.status == "Code Review" and len(mcp.comments) == 1
     assert store.run("AQS-1-run")["status"] == "COMPLETED"
     origin_head = sh("git", "--git-dir", str(tmp_path / "origin/api.git"), "rev-parse", "AQS-1")
-    assert origin_head == sh("git", "-C", wt(ws, "api"), "rev-parse", "HEAD")
-    msg = sh("git", "-C", wt(ws, "api"), "log", "-1", "--format=%B")
+    main = ws.repos["api"].path  # the finished run's clean worktrees are gone; the branch stays in the main clone
+    assert not Path(wt(ws, "api")).exists() and not Path(wt(ws, "web")).exists()
+    assert origin_head == sh("git", "-C", main, "rev-parse", "AQS-1")
+    msg = sh("git", "-C", main, "log", "-1", "--format=%B", "AQS-1")
     assert msg.startswith("AQS-1: Export orders as CSV") and "Devflow-Run: AQS-1-run" in msg
 
 

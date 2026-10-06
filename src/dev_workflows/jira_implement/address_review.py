@@ -15,7 +15,7 @@ from typing_extensions import TypedDict
 from ..llm import AsStep
 from . import dag as dagmod
 from . import worktrees
-from .graph import (CHECKPOINT_TITLES, HIDDEN_NODES, SYSTEM, TICKET_FORM, TRANSIENT, Deps, GraphKit, _j, _tail, diff_digest,
+from .graph import (CHECKPOINT_TITLES, release_run_worktrees, HIDDEN_NODES, SYSTEM, TICKET_FORM, TRANSIENT, Deps, GraphKit, _j, _tail, diff_digest,
                     check_environment, merge_repos, route_feedback, run_repo_checks)
 from .jira import marker
 from .ledger import Effect, perform
@@ -598,7 +598,7 @@ def build_review_graph(deps: Deps, checkpointer=None):
         if state.get("jira_result"):
             lines.append(f"\nJira delivery comment: {state['jira_result']} (status unchanged)")
         store.set_status(state["run_id"], "COMPLETED", node="summary")
-        return {"output": "\n".join(lines) + "\n"}
+        return {"output": "\n".join(lines) + "\n" + release_run_worktrees(deps, state).strip() + "\n"}
 
     node("summary", summary)
     g.add_edge("summary", END)
