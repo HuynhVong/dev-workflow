@@ -1,0 +1,5 @@
+{"id": "annual-seats", "input": "How much do 3 Pro seats cost per year if billed annually, with the annual discount?", "expect": {"contains": ["612"], "cites": ["pricing.md"]}}
+{"id": "limit-history", "input": "What was the Pro rate limit before January 2026 and what is it now?", "expect": {"contains": ["300", "600"], "cites": ["changelog.md"]}}
+{"id": "team-monthly-refund", "input": "A Team customer has 8 seats on monthly billing. What is the monthly cost and how long does a refund take to process?", "expect": {"contains": ["400", "5 business days"], "cites": ["pricing.md", "refunds.md"]}}
+{"id": "burst", "input": "How many requests per minute can a Team customer send, and what is the burst allowance?", "expect": {"contains": ["3000", "2x"], "cites": ["limits.md"]}}
+{"id": "unanswerable", "input": "Do you offer an on-premise version of the product?", "expect": {"abstain": true}}

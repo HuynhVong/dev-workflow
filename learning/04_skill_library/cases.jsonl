@@ -1,0 +1,10 @@
+{"id": "vacation", "input": "How many vacation days do new employees get?", "expect": "hr-policy"}
+{"id": "sql-top5", "input": "Write a query for the top 5 customers by revenue.", "expect": "sql-help"}
+{"id": "miles", "input": "Convert 5 miles to km.", "expect": "unit-conversion"}
+{"id": "chitchat", "input": "Hi, how are you today?", "expect": null}
+{"id": "parental-payroll", "input": "My manager approved parental leave. How does payroll treat it?", "expect": "hr-policy"}
+{"id": "joins", "input": "What is the difference between INNER JOIN and LEFT JOIN?", "expect": "sql-help"}
+{"id": "ounces", "input": "How many ounces are in 2 liters?", "expect": "unit-conversion"}
+{"id": "general-knowledge", "input": "What is the capital of France?", "expect": null}
+{"id": "paraphrased-hr", "input": "I need to know how much time off I get after my baby is born.", "expect": "hr-policy"}
+{"id": "paraphrased-units", "input": "How tall is six feet in metres?", "expect": "unit-conversion"}

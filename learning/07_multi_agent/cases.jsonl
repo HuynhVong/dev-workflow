@@ -1,0 +1,3 @@
+{"id": "compare-plans", "input": "Compare the Pro and Team plans: the yearly price per seat with the annual discount, and the requests-per-minute limit of each.", "expect": {"contains": ["204", "510", "600", "3000"]}}
+{"id": "pro-in-2026", "input": "What changed for the Pro plan in 2026, and what is the refund window for a Pro customer billed annually?", "expect": {"contains": ["600", "15%", "30 days"]}}
+{"id": "all-limits-cheapest", "input": "List the rate limits of all three plans, and the yearly price of the cheapest paid seat with the annual discount.", "expect": {"contains": ["60", "600", "3000", "204"]}}

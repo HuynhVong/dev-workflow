@@ -1,0 +1,1 @@
+{"id": "customers", "input": "data.csv", "expect": {"duplicate_id": [17, 63, 150], "negative_age": [5, 88], "bad_email": [23, 24, 140], "missing_name": [9, 120], "future_signup": [77]}}
