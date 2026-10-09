@@ -25,7 +25,7 @@ from ..llm import AsStep, StructuredLLM
 from ..routing import Routing
 from ..textutil import diff_digest, diffs_block  # noqa: F401  (diff_digest is re-exported for the other workflows)
 from . import dag as dagmod
-from . import mockups, task_inputs
+from . import handoff, mockups, task_inputs
 from . import worktrees
 from .coding_agent import ClaudeCodeAgent, CodingAgent
 from .confluence import ConfluenceReader, compact_pages, page_ids_from_urls
@@ -59,15 +59,18 @@ IMPLEMENT_FORM = TICKET_FORM + [
      "help": "Optional. Drag, browse or paste (Ctrl+V) up to 6 images of how it should look. They are read once into a written brief."},
     {"name": "note", "label": "Notes", "type": "textarea",
      "placeholder": "Optional: what the images mean, what must match, what to avoid. Your notes win over the ticket text."},
+    {"name": "manual_code", "label": "I'll write the code myself (Claude Code CLI)", "type": "bool",
+     "help": "Plan, branches, checks, review and push stay automatic; the run stops after the plan and waits while you code in the worktrees."},
 ]
 CHECKPOINT_TITLES = {
     "clarify": "Answer open questions", "approve_plan": "Approve the plan", "branch_ownership": "Reuse existing branches",
     "scope_request": "Approve a repo outside scope", "budget_exhausted": "Fix attempts used up", "manual_test": "Manual test",
     "route_ask": "Decide on feedback", "approve_push": "Approve push", "push_blocked": "Push blocked",
     "triage": "Triage review threads", "manual_retest": "Manual re-test", "sync_blocked": "Branch sync blocked",
+    "code_by_hand": "Write the code yourself",
 }
 HIDDEN_NODES = ["schedule", "apply_clarify", "apply_scope", "apply_route_ask", "apply_triage", "manual_ok", "manual_feedback",
-                "mark_hand_fixed", "approve_branch_reuse", "plan_revise"]
+                "mark_hand_fixed", "approve_branch_reuse", "plan_revise", "apply_code_by_hand"]
 DEVFLOW_UI = {
     "title": "Jira ticket implement",
     "description": "One Jira key to draft GitLab MRs across several repos, with your plan approval, manual test and push approval.",
@@ -134,6 +137,7 @@ class State(TypedDict, total=False):
     task: str
     dev_images: list[str]
     dev_notes: str
+    manual_code: bool
     design_brief: dict | None
     test_cases: dict
     test_cases_version: int
@@ -826,6 +830,8 @@ def build_graph(deps: Deps, checkpointer=None, free: bool = False):
             return "scope_request"
         if any(r["status"] == "blocked_budget" for r in repos.values()):
             return "budget_exhausted"
+        if state.get("manual_code") and any(r["status"] in ("pending", "needs_fix") for r in repos.values()):
+            return "code_by_hand"  # you write the code; the coding agent is never started
         todo = [n for n, r in repos.items() if r["status"] in ("pending", "needs_fix", "needs_checks")]
         if not todo:
             return gate(state)
@@ -838,10 +844,34 @@ def build_graph(deps: Deps, checkpointer=None, free: bool = False):
         edges = [tuple(e) for e in state["dag"]["edges"]]
         return {"payload_run_id": state["run_id"], "repo": repo, "repo_state": state["repos"][repo], "scope": state["scope"],
                 "ticket_key": state.get("ref") or state["ticket_key"], "plan": state["plan"], "analysis": state["analysis"],
+                "manual_code": bool(state.get("manual_code")),
                 "upstream": dagmod.upstream_of(repo, edges), "dev_extra": mockups.coding_block(state, ws.repo(repo).has_ui)}
 
     g.add_conditional_edges("schedule", route_schedule,
-                            ["implement_repo", "scope_request", "budget_exhausted", *GATE_TARGETS])
+                            ["implement_repo", "scope_request", "budget_exhausted", "code_by_hand", *GATE_TARGETS])
+
+    # --- manual_code: you write the code in the worktrees (Claude Code CLI or your editor) ----------------------------
+    def code_by_hand_payload(state):
+        checks = {r: ws.repo(r).check_commands for r in state["repos"]}
+        plan_file = handoff.write_plan(Path(ws.state_dir, state["run_id"], "plan.md"), handoff.plan_markdown(state, checks))
+        todo = {r: rs for r, rs in state["repos"].items() if rs["status"] in ("pending", "needs_fix")}
+        return {"plan_file": plan_file, "branch": _branch(state),
+                "repos": {r: {"worktree": state["scope"][r], "tasks": rs.get("tasks", []), "fix_this_first": rs.get("fix_instructions", [])}
+                          for r, rs in todo.items()},
+                "hint": f"Open Claude Code in each worktree and give it {plan_file}. Do not commit or push. When you are done choose "
+                        "done: the repo's checks run, then the review and your manual test."}
+
+    checkpoint("code_by_hand", code_by_hand_payload, ["done", "abort"])
+
+    def apply_code_by_hand(state):
+        todo = {r: {"status": "needs_checks", "fix_instructions": []} for r, rs in state["repos"].items()
+                if rs["status"] in ("pending", "needs_fix")}
+        store.audit(state["run_id"], "code_by_hand", {"repos": list(todo)})
+        return {"repos": todo, "code_version": 1, "pending_feedback": []}
+
+    node("apply_code_by_hand", apply_code_by_hand)
+    g.add_conditional_edges("code_by_hand_wait", lambda s: "abort" if choice(s) == "abort" else "apply_code_by_hand", ["abort", "apply_code_by_hand"])
+    g.add_edge("apply_code_by_hand", "schedule")
 
     def run_checks(repo: str, scope: dict) -> tuple[bool, list[dict]]:
         return run_repo_checks(deps, repo, scope)
@@ -878,6 +908,9 @@ def build_graph(deps: Deps, checkpointer=None, free: bool = False):
             rs["checks"] = results
             if ok:
                 rs["status"], rs["fix_instructions"] = "ready", []
+                break
+            if payload.get("manual_code"):  # your own code failed its checks: back to you with the output
+                rs["status"], rs["fix_instructions"] = "needs_fix", [f"Checks failed:\n{_j(results)}"]
                 break
             if mode == "needs_checks":  # you fixed it by hand; a failure goes back to you, not to the agent
                 rs["status"] = "blocked_budget"

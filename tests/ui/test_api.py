@@ -173,7 +173,7 @@ def test_free_run_with_an_uploaded_mockup_through_the_api(env):
     import base64
     c = env.client
     wf = {w["id"]: w for w in c.get("/api/workflows").json()["workflows"]}["free_implement"]
-    assert [f["name"] for f in wf["form"]] == ["description", "images", "note", "branch", "ref", "repos"]
+    assert [f["name"] for f in wf["form"]] == ["description", "images", "note", "branch", "ref", "repos", "manual_code"]
     assert next(f for f in wf["form"] if f["name"] == "images")["type"] == "images" and wf["kind"] == "ticket"
     assert c.post("/api/uploads", json={"name": "notes.txt", "data": "eA=="}).status_code == 400
     png = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"x" * 32).decode()
