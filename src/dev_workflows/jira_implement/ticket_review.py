@@ -22,6 +22,7 @@ from .confluence import compact_pages, page_ids_from_urls
 from ..textutil import diffs_block
 from .graph import SYSTEM, TRANSIENT, Deps, GraphKit, PreflightFailed, _j, _tail
 from .jira import IMAGE_EXT, JiraWriteRefused, marker
+from .parallel import run_each
 from .ledger import Effect, perform
 from .mcp_config import has_playwright
 from .models import CommentDraft, Coverage, TestPlanDraft, TicketUnderstanding
@@ -282,9 +283,11 @@ def build_graph(deps: Deps, checkpointer=None):
         from ..workflows import pr_review
         reviewer = pr_review.build_graph(llm)  # its own pr_review.* steps, so workspace.yaml model overrides apply
         diffs, reviews = commit_diffs(state), {}
-        for r, diff in diffs.items():
-            out = reviewer.invoke({"title": f"{state['ticket_key']}: {state['ticket']['title']} ({r})",
-                                   "description": ticket_block(state), "diff": diff, "findings": []})
+        def review(r):
+            return reviewer.invoke({"title": f"{state['ticket_key']}: {state['ticket']['title']} ({r})",
+                                    "description": ticket_block(state), "diff": diffs[r], "findings": []})
+
+        for r, out in zip(diffs, run_each(diffs, review)):  # the repos are reviewed side by side
             reviews[r] = {"decision": out["verdict"].decision, "summary": out["verdict"].summary, "risk": out["triage"].risk,
                           "findings": [f.model_dump() for f in out["findings"]]}
         cov = llm.structured(SYSTEM, ticket_block(state) + f"\n<commits_by_repo>\n{diffs_block(diffs)}\n</commits_by_repo>\n\n"

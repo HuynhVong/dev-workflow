@@ -26,6 +26,7 @@ from ..routing import Routing
 from ..textutil import diff_digest, diffs_block  # noqa: F401  (diff_digest is re-exported for the other workflows)
 from . import dag as dagmod
 from . import handoff, mockups, task_inputs
+from .parallel import run_each
 from . import worktrees
 from .coding_agent import ClaudeCodeAgent, CodingAgent
 from .confluence import ConfluenceReader, compact_pages, page_ids_from_urls
@@ -666,9 +667,12 @@ def build_graph(deps: Deps, checkpointer=None, free: bool = False):
         question = (f"{_ticket_block(state, context=False)}\n<analysis>{_j(state['analysis'])}</analysis>\n<impact>{_j(state['impact'])}</impact>\n\n"
                     "Find the modules, routes, components and tables in THIS repository that the change touches. "
                     "Set confirmed=false if this repository does not need to change.")
-        for repo in state["impact"]["candidate_repos"]:
+        def explore(repo):
             vcs.git(repo, "fetch", "origin")
-            res = coder.explore(repo, state["scope"][repo], question, step="discover_repos")
+            return coder.explore(repo, state["scope"][repo], question, step="discover_repos")
+
+        candidates = state["impact"]["candidate_repos"]
+        for repo, res in zip(candidates, run_each(candidates, explore)):  # the repos are explored side by side
             findings[repo] = {"confirmed": res.ok, "relevant_files": res.files_changed, "notes": res.summary}
             needs += [n for n in res.out_of_scope_needs if n.get("repo") not in state["scope"]]
         return {"repo_findings": findings, "scope_requests": needs}
@@ -1105,11 +1109,15 @@ def build_graph(deps: Deps, checkpointer=None, free: bool = False):
         vcs = deps.vcs(state)
         reviewer = pr_review.build_graph(AsStep(llm, "repo_review"))
         reviews, feedback = {}, []
-        for repo in state["dag"]["nodes"]:
+
+        def review(repo):
             diff = vcs.diff_against(repo, f"origin/{ws.repo(repo).base_branch}")
-            out = reviewer.invoke({"title": f"{state['ticket_key']} ({repo})", "description": _j(state["repos"][repo].get("tasks", [])) + (
-                                       "\n" + mockups.context_block(state) if ws.repo(repo).has_ui and mockups.context_block(state) else ""),
-                                   "diff": diff, "findings": []})
+            return reviewer.invoke({"title": f"{state['ticket_key']} ({repo})", "description": _j(state["repos"][repo].get("tasks", [])) + (
+                                        "\n" + mockups.context_block(state) if ws.repo(repo).has_ui and mockups.context_block(state) else ""),
+                                    "diff": diff, "findings": []})
+
+        nodes = state["dag"]["nodes"]
+        for repo, out in zip(nodes, run_each(nodes, review)):  # the repos are reviewed side by side
             reviews[repo] = {"decision": out["verdict"].decision, "summary": out["verdict"].summary,
                              "findings": [f.model_dump() for f in out["findings"]]}
             feedback += [{"source": "review", "repos": [repo], "text": f"[{f.severity}] {f.file}:{f.line or '?'} {f.title}: {f.detail} -> {f.suggestion}"}

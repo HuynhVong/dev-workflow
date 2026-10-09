@@ -64,3 +64,41 @@ def test_plan_markdown_lists_only_repos_that_need_code():
                                                        "fix_instructions": ["fix it"]}}}
     md = handoff.plan_markdown(state, {"b": [("test", "pytest")]})
     assert "a before b" in md and "(done, nothing to do)" in md and "do b" in md and "fix it" in md and "`pytest`" in md
+
+
+def test_run_each_runs_side_by_side_in_order_and_keeps_the_context():
+    import contextvars
+    import threading
+    import time
+
+    from dev_workflows.jira_implement.parallel import run_each
+
+    var = contextvars.ContextVar("v", default="none")
+    var.set("run-1")
+    seen, gate = [], threading.Barrier(3, timeout=5)
+
+    def work(n):
+        gate.wait()  # only passes when three calls are in flight at once
+        seen.append(var.get())
+        time.sleep(0.01 * (3 - n))
+        return n * 2
+
+    assert run_each([0, 1, 2], work) == [0, 2, 4] and seen == ["run-1"] * 3
+
+
+def test_run_each_raises_the_first_failure_after_all_finished():
+    import pytest
+
+    from dev_workflows.jira_implement.parallel import run_each
+
+    done = []
+
+    def work(n):
+        done.append(n)
+        if n == 1:
+            raise ValueError("boom")
+        return n
+
+    with pytest.raises(ValueError):
+        run_each([0, 1, 2], work)
+    assert sorted(done) == [0, 1, 2]

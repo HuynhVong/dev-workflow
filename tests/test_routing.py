@@ -24,7 +24,7 @@ def skill(root: Path, name: str, description: str, body: str = "Do it well.") ->
 
 def test_default_models_follow_the_table():
     r = Routing(registry=SkillRegistry([]))
-    expect = {"gather_context": "haiku", "analyze_requirements": "sonnet", "change_impact": "sonnet", "discover_repos": "haiku",
+    expect = {"gather_context": "haiku", "analyze_requirements": "sonnet", "change_impact": "sonnet", "discover_repos": "sonnet",
               "plan_implementation": "opus", "implement": "sonnet", "targeted_fix": "sonnet", "analyze_feedback_and_route": "sonnet",
               "integration_check": "sonnet", "repo_review": "sonnet", "contract_review": "opus", "summary": "haiku"}
     for step, tier in expect.items():

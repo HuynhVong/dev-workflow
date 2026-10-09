@@ -35,7 +35,7 @@ STEPS: dict[str, Step] = {
     "gather_context": Step("haiku", ("confluence-read",)),
     "analyze_requirements": Step("sonnet", ("requirements-analysis",)),
     "change_impact": Step("sonnet", ("repo-exploration",)),
-    "discover_repos": Step("haiku", ("repo-search",)),
+    "discover_repos": Step("sonnet", ("repo-search",)),
     "plan_implementation": Step("opus", ("planning",), domain=True),
     "implement": Step("sonnet", (), stack=True, escalate_to="opus"),
     "targeted_fix": Step("sonnet", (), stack=True, escalate_to="opus"),
