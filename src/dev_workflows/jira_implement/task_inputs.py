@@ -82,7 +82,7 @@ def adopt_images(ws, run_id: str, items) -> list[str]:
 
 
 def collect(ws, run_id: str, values: dict) -> dict:
-    """Run inputs from the start form: {"dev_images": [paths], "dev_notes": str} (keys only when given)."""
+    """Run inputs from the start form: {"dev_images": [paths], "dev_notes": str, "manual_code": True} (keys only when given)."""
     out: dict = {}
     images = adopt_images(ws, run_id, values.get("images"))
     if images:
@@ -90,6 +90,8 @@ def collect(ws, run_id: str, values: dict) -> dict:
     note = str(values.get("note") or "").strip()
     if note:
         out["dev_notes"] = note
+    if values.get("manual_code"):
+        out["manual_code"] = True
     return out
 
 

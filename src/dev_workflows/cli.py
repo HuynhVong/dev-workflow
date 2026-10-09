@@ -142,9 +142,11 @@ def _add_implement_commands(sub) -> None:
     si.add_argument("--repos", help="hard allow-list of repos (comma separated)")
     si.add_argument("--image", action="append", default=[], metavar="FILE", help="a mockup/reference image (repeat, up to 6)")
     si.add_argument("--note", help="your notes for the plan and the code (they win over the ticket text)")
+    si.add_argument("--manual-code", action="store_true", help="you write the code (e.g. with Claude Code CLI) in the worktrees; devflow plans, checks, reviews and pushes")
     common(si, run=False)
     si.set_defaults(fn=lambda a: _session(a).start_run(
-        "jira_ticket_implement", {"ticket": a.ticket, "repos": _csv(a.repos) or [], "images": a.image, "note": a.note or ""}) and None)
+        "jira_ticket_implement", {"ticket": a.ticket, "repos": _csv(a.repos) or [], "images": a.image, "note": a.note or "",
+                                  "manual_code": a.manual_code}) and None)
 
     sf = sub.add_parser("free", help="a described task (no Jira) in the repos you pick, on your branch -> draft MRs")
     sf.add_argument("--branch", required=True, help="new branch name; cut from origin/develop in every repo")
@@ -154,6 +156,7 @@ def _add_implement_commands(sub) -> None:
     sf.add_argument("--ref", help="ticket/reference number for the commit and MR title prefix")
     sf.add_argument("--image", action="append", default=[], metavar="FILE", help="a mockup/reference image (repeat, up to 6)")
     sf.add_argument("--note", help="notes on the images or the task")
+    sf.add_argument("--manual-code", action="store_true", help="you write the code (e.g. with Claude Code CLI) in the worktrees; devflow plans, checks, reviews and pushes")
     common(sf, run=False)
 
     def do_free(a):
@@ -162,7 +165,7 @@ def _add_implement_commands(sub) -> None:
         if not text.strip():
             raise SystemExit("give the task with --desc or --desc-file")
         _session(a).start_run(FREE, {"description": text, "branch": a.branch, "repos": _csv(a.repos) or [], "ref": a.ref or "",
-                                     "images": a.image, "note": a.note or ""})
+                                     "images": a.image, "note": a.note or "", "manual_code": a.manual_code})
     sf.set_defaults(fn=do_free)
 
     st = sub.add_parser("review", help="Jira ticket + its commits -> code review, approved E2E tests with proof, Jira comment")

@@ -172,6 +172,16 @@ Each Claude Code call loads context you did not ask for, so devflow turns it off
 
 ## Usage
 
+### Writing the code yourself (`--manual-code`)
+
+`devflow implement AQS-5512 --manual-code` (or `devflow free ... --manual-code`, or the "I'll write the code myself" box in
+the UI) keeps everything around the code automatic and leaves the coding to you. After you approve the plan and the branches
+are cut, the run stops at **Write the code yourself** and writes the plan to `<state_dir>/<run_id>/plan.md` (tasks per repo,
+contracts, checks, test plan). Open Claude Code CLI in each repo's worktree (`devflow worktrees` lists them), give it that
+file, and code. Do not commit or push. Choose `done` and devflow runs the repo's checks (a failure comes back to you with the
+output, never to the coding agent), then the review, your manual test and the push approval. Feedback from review or manual
+test returns to the same step with the fix instructions in the plan file. No coding-agent session runs in this mode.
+
 ### Ticket to plan
 
 ```bash

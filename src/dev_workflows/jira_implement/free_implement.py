@@ -19,6 +19,8 @@ FORM = [
     {"name": "ref", "label": "Ticket / reference number", "type": "text", "placeholder": "Optional, e.g. AQS-123",
      "help": "Only used as a prefix of the commit message and MR title."},
     {"name": "repos", "label": "Repos", "type": "repos", "required": True, "help": "Only these repos are touched. Pick at least one."},
+    {"name": "manual_code", "label": "I'll write the code myself (Claude Code CLI)", "type": "bool",
+     "help": "Plan, branches, checks, review and push stay automatic; the run stops after the plan and waits while you code in the worktrees."},
 ]
 CHECKPOINTS = {**CHECKPOINT_TITLES, "approve_code": "Approve the code changes", "manual_test": "Manual test"}
 FREE_HIDDEN = [*HIDDEN_NODES, "apply_code_approval", "load_task"]

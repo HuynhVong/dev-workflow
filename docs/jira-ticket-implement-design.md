@@ -216,7 +216,7 @@ Every AI step names itself, and `routing.py` turns that name into a model and a 
 | `analyze_requirements` | Sonnet | `requirements-analysis` |
 | `change_impact` | Sonnet | `repo-exploration` |
 | `clarify` | Human (questions come from the two steps above) | — |
-| `discover_repos` | Haiku (Claude Code, read-only) | `repo-search` |
+| `discover_repos` | Sonnet (Claude Code, read-only) | `repo-search` |
 | `plan_implementation` | Opus | `planning` + domain skills |
 | `approve_plan`, `manual_test`, `approve_push` | Human | — |
 | `prepare_branches`, `commit_and_push`, `open_draft_mrs`, `jira_update` | No AI | — |
